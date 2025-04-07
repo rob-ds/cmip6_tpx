@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyCharm
+.idea/
+
+# Data files
+data/raw/
+data/processed/
+*.nc
+*.csv
+*.grib
+*.zarr
+*.hdf5
+*.h5
+
+# Jupyter Notebooks
+.ipynb_checkpoints
+notebooks/
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+.conda/
+
+# OS-specific
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Log files
+*.log
+
+# Testing
+.coverage
+.pytest_cache/
+htmlcov/

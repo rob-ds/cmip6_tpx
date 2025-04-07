@@ -1,0 +1,22 @@
+name: cmip6_tpx
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - numpy
+  - scipy
+  - pandas
+  - xarray
+  - dask
+  - netcdf4
+  - cdsapi
+  - matplotlib
+  - cartopy
+  - pytest
+  - pip
+  - pip:
+    - climatetools
+    - xclim
+    - regionmask
+    - statsmodels
