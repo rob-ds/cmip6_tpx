@@ -16,7 +16,5 @@ dependencies:
   - pytest
   - pip
   - pip:
-    - climatetools
     - xclim
-    - regionmask
     - statsmodels
