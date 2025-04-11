@@ -23,6 +23,13 @@ wheels/
 # PyCharm
 .idea/
 
+# Output figures
+figures/
+*.png
+*.pdf
+*.svg
+*.jpg
+
 # Data files
 data/raw/
 data/processed/
