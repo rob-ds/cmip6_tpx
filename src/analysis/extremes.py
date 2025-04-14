@@ -2,15 +2,21 @@
 Extremes Module
 
 This module provides functions to analyze climate extreme events from historical and
-projection data, with support for both single-variable and compound extremes.
+projection data, following the ETCCDI (Expert Team on Climate Change Detection and Indices)
+methodology for standardized climate indices, adapted for daily mean temperature data.
+
+The module includes both standard precipitation indices and modified temperature indices
+suitable for daily mean data, as well as compound extreme indices that capture the
+relationship between temperature and precipitation extremes.
 """
 
 import logging
 from pathlib import Path
-from typing import Dict, Union, Any, Optional, Tuple
+from typing import Dict, Union, Any, Tuple
 
 import numpy as np
 import xarray as xr
+import pandas as pd
 
 from .base_analyzer import BaseAnalyzer
 
@@ -20,118 +26,198 @@ logger = logging.getLogger(__name__)
 
 class ExtremesAnalyzer(BaseAnalyzer):
     """
-    Analyzer for climate extreme events.
+    Analyzer for climate extreme events following adapted ETCCDI methodology.
 
-    This class computes extreme event metrics, including frequency, persistence,
-    and intensity of values exceeding specified thresholds. It supports both
-    single-variable extremes and compound extremes (with a secondary variable).
+    This class computes standardized extreme event metrics for both temperature and
+    precipitation variables, including frequency, intensity, and duration indices.
+    It adapts the methods defined by the Expert Team on Climate Change Detection
+    and Indices (ETCCDI) for use with daily mean temperature data, and adds
+    compound extreme indices that combine temperature and precipitation data.
     """
 
     def __init__(
             self,
-            variable: str,
             experiment: str,
             month: int,
             input_dir: Union[str, Path],
             output_dir: Union[str, Path],
-            threshold_percentile: float = 95.0,
-            secondary_variable: Optional[str] = None,
-            secondary_threshold_percentile: float = 95.0,
+            temperature_threshold_percentile: float = 90.0,
+            precipitation_threshold_percentile: float = 95.0,
             wet_day_threshold: float = 1.0,
             dry_day_threshold: float = 1.0,
-            heat_wave_min_duration: int = 3
+            heat_wave_min_duration: int = 6  # ETCCDI standard is 6 days
     ):
         """
-        Initialize the analyzer.
+        Initialize the analyzer for both temperature and precipitation variables.
 
         Args:
-            variable: Primary climate variable to analyze ('temperature' or 'precipitation')
             experiment: Experiment to analyze ('ssp245' or 'ssp585')
             month: Month to analyze (1-12)
             input_dir: Directory containing input data
             output_dir: Directory to store output data
-            threshold_percentile: Percentile threshold for extreme events detection
-            secondary_variable: Optional secondary variable for compound extremes
-            secondary_threshold_percentile: Percentile threshold for secondary variable
-            wet_day_threshold: Threshold for wet day identification (mm/day)
-            dry_day_threshold: Threshold for dry day identification (mm/day)
+            temperature_threshold_percentile: Percentile threshold for temperature extremes (90 for standard ETCCDI)
+            precipitation_threshold_percentile: Percentile threshold for precipitation extremes (95 for standard ETCCDI)
+            wet_day_threshold: Threshold for wet day identification (1.0 mm/day by ETCCDI standard)
+            dry_day_threshold: Threshold for dry day identification (1.0 mm/day by ETCCDI standard)
+            heat_wave_min_duration: Minimum consecutive days for heat wave/warm spell (6 days by ETCCDI standard)
         """
-        super().__init__(variable, experiment, month, input_dir, output_dir)
+        # Call the parent constructor with the default variable to initialize base attributes
+        # We'll load both variables later
+        super().__init__('temperature', experiment, month, input_dir, output_dir)
 
-        self.threshold_percentile = threshold_percentile
-        self.secondary_variable = secondary_variable
-        self.secondary_threshold_percentile = secondary_threshold_percentile
+        # Store thresholds
+        self.temperature_threshold_percentile = temperature_threshold_percentile
+        self.precipitation_threshold_percentile = precipitation_threshold_percentile
         self.wet_day_threshold = wet_day_threshold
         self.dry_day_threshold = dry_day_threshold
         self.heat_wave_min_duration = heat_wave_min_duration
 
-        # Primary thresholds
-        self.threshold_value = None
+        # Initialize threshold values (will be calculated from historical data)
+        self.temperature_threshold_value = None
+        self.temperature_threshold_value_low = None  # For lower percentiles (10th)
+        self.temperature_median_value = None  # For median temperature
+        self.precipitation_threshold_value = None
 
-        # Secondary variable data and thresholds
-        self.secondary_historical_data = None
-        self.secondary_projection_data = None
-        self.secondary_threshold_value = None
-        self.secondary_nc_var_name = None
+        # Initialize data containers for temperature
+        self.temperature_historical_data = None
+        self.temperature_projection_data = None
 
-        # Initialize containers for results
-        self.frequency = None
-        self.persistence = None
-        self.intensity = None
-        self.compound_hot_dry = None
-        self.compound_hot_wet = None
+        # Initialize data containers for precipitation
+        self.precipitation_historical_data = None
+        self.precipitation_projection_data = None
 
-        logger.info(f"Initialized {self.__class__.__name__} with {variable}, "
-                    f"threshold_percentile={threshold_percentile}")
+        # Initialize result containers - temperature metrics appropriate for daily mean data
+        self.tm_max = None  # Maximum daily mean temperature
+        self.tm_min = None  # Minimum daily mean temperature
+        self.tm90p = None  # Percentage of days when daily mean temperature > 90th percentile
+        self.tm10p = None  # Percentage of days when daily mean temperature < 10th percentile
+        self.warm_spell_days = None  # Count of days in warm spells (≥ consecutive days > 90th percentile)
+        self.cold_spell_days = None  # Count of days in cold spells (≥ consecutive days < 10th percentile)
 
-        if secondary_variable:
-            logger.info(f"Secondary variable: {secondary_variable}, "
-                        f"threshold_percentile={secondary_threshold_percentile}")
+        # Initialize result containers - precipitation metrics
+        self.r95p = None  # Precipitation amount on very wet days
+        self.prcptot = None  # Total precipitation
+        self.rx1day = None  # Max 1-day precipitation
+        self.rx5day = None  # Max 5-day precipitation
+        self.r10mm = None  # Number of days with precip >= 10mm
+        self.r20mm = None  # Number of days with precip >= 20mm
+        self.sdii = None  # Simple daily intensity index
+        self.cdd = None  # Consecutive dry days
+        self.cwd = None  # Consecutive wet days
+
+        # Initialize result containers - basic compound extreme metrics
+        self.hot_dry_frequency = None  # Count of hot-dry days
+        self.hot_wet_frequency = None  # Count of hot-wet days
+        self.cold_wet_frequency = None  # Count of cold-wet days
+
+        # Initialize result containers - advanced compound metrics
+        self.cwhd = None  # Consecutive wet-hot days
+        self.wspi = None  # Warm-period precipitation intensity
+        self.wpd = None  # Warm precipitation days
+
+        # Track processing state
+        self.is_data_loaded = False
+
+        logger.info(f"Initialized {self.__class__.__name__} for both temperature and precipitation, "
+                    f"{experiment}, month {month}")
 
     def load_data(self) -> None:
         """
-        Load historical and projection data for the specified variable(s).
-
-        For compound extremes, also loads the secondary variable data.
+        Load historical and projection data for both temperature and precipitation.
         """
-        # Load primary variable data using parent method
-        super().load_data()
+        logger.info("Loading temperature and precipitation data")
 
-        # If secondary variable is specified, load it as well
-        if self.secondary_variable:
-            logger.info(f"Loading secondary variable: {self.secondary_variable}")
+        # Load temperature data
+        historical_file = self._find_file(self.input_dir / "raw" / "historical", "historical_temperature")
+        projection_file = self._find_file(self.input_dir / "raw" / "projections", f"{self.experiment}_temperature")
 
-            # Backup primary variable data
-            primary_historical = self.historical_data
-            primary_projection = self.projection_data
-            primary_nc_var_name = self.nc_var_name
-            primary_variable = self.variable
+        logger.info(f"Loading temperature historical data from {historical_file}")
+        logger.info(f"Loading temperature projection data from {projection_file}")
 
-            # Set secondary variable name
-            self.secondary_nc_var_name = self.var_name_mapping.get(self.secondary_variable)
+        # Load datasets
+        temp_historical_ds = xr.open_dataset(historical_file)
+        temp_projection_ds = xr.open_dataset(projection_file)
 
-            if not self.secondary_nc_var_name:
-                raise ValueError(f"Invalid secondary variable: {self.secondary_variable}. "
-                                 f"Must be one of {list(self.var_name_mapping.keys())}")
+        # Extract center point coordinates
+        self.lat = float(temp_historical_ds.lat[1].values)
+        self.lon = float(temp_historical_ds.lon[1].values)
 
-            # Temporarily swap variable names
-            self.variable = self.secondary_variable
-            self.nc_var_name = self.secondary_nc_var_name
+        # Extract temperature data
+        temp_historical_var = temp_historical_ds['tas'][:, 1, 1].values
+        temp_projection_var = temp_projection_ds['tas'][:, 1, 1].values
 
-            # Load secondary variable
-            super().load_data()
+        # Create temperature DataArrays
+        self.temperature_historical_data = xr.DataArray(
+            data=temp_historical_var,
+            coords={'time': temp_historical_ds.time.values},
+            dims=['time']
+        )
 
-            # Store secondary data
-            self.secondary_historical_data = self.historical_data
-            self.secondary_projection_data = self.projection_data
+        self.temperature_projection_data = xr.DataArray(
+            data=temp_projection_var,
+            coords={'time': temp_projection_ds.time.values},
+            dims=['time']
+        )
 
-            # Restore primary variable data
-            self.variable = primary_variable
-            self.nc_var_name = primary_nc_var_name
-            self.historical_data = primary_historical
-            self.projection_data = primary_projection
+        # Load precipitation data
+        historical_file = self._find_file(self.input_dir / "raw" / "historical", "historical_precipitation")
+        projection_file = self._find_file(self.input_dir / "raw" / "projections", f"{self.experiment}_precipitation")
 
-            logger.info(f"Secondary variable loaded: {self.secondary_variable}")
+        logger.info(f"Loading precipitation historical data from {historical_file}")
+        logger.info(f"Loading precipitation projection data from {projection_file}")
+
+        # Load datasets
+        precip_historical_ds = xr.open_dataset(historical_file)
+        precip_projection_ds = xr.open_dataset(projection_file)
+
+        # Extract precipitation data
+        precip_historical_var = precip_historical_ds['pr'][:, 1, 1].values
+        precip_projection_var = precip_projection_ds['pr'][:, 1, 1].values
+
+        # Create precipitation DataArrays
+        self.precipitation_historical_data = xr.DataArray(
+            data=precip_historical_var,
+            coords={'time': precip_historical_ds.time.values},
+            dims=['time']
+        )
+
+        self.precipitation_projection_data = xr.DataArray(
+            data=precip_projection_var,
+            coords={'time': precip_projection_ds.time.values},
+            dims=['time']
+        )
+
+        # Convert precipitation units
+        logger.info("Converting precipitation units from kg.m-2.s-1 to mm.day-1")
+        self.precipitation_historical_data = self.precipitation_historical_data * 86400
+        self.precipitation_projection_data = self.precipitation_projection_data * 86400
+
+        # Filter data for the specified month
+        self._filter_data_for_month()
+
+        # Mark as loaded
+        self.is_data_loaded = True
+
+        logger.info("Data loading complete for both temperature and precipitation")
+
+    def _filter_data_for_month(self):
+        """
+        Filter both temperature and precipitation data for the specified month.
+        """
+        logger.info(f"Filtering data for month {self.month}")
+
+        # Filter temperature data
+        self.temperature_historical_data = self._filter_data_by_month(self.temperature_historical_data)
+        self.temperature_projection_data = self._filter_data_by_month(self.temperature_projection_data)
+
+        # Filter precipitation data
+        self.precipitation_historical_data = self._filter_data_by_month(self.precipitation_historical_data)
+        self.precipitation_projection_data = self._filter_data_by_month(self.precipitation_projection_data)
+
+        logger.info(f"Temperature historical data shape after filtering: {self.temperature_historical_data.shape}")
+        logger.info(f"Temperature projection data shape after filtering: {self.temperature_projection_data.shape}")
+        logger.info(f"Precipitation historical data shape after filtering: {self.precipitation_historical_data.shape}")
+        logger.info(f"Precipitation projection data shape after filtering: {self.precipitation_projection_data.shape}")
 
     def _filter_data_by_month(self, data: xr.DataArray) -> xr.DataArray:
         """
@@ -160,85 +246,66 @@ class ExtremesAnalyzer(BaseAnalyzer):
 
         return filtered_data
 
-    def _filter_month(self) -> None:
+    def _identify_wet_days(self, data: xr.DataArray) -> np.ndarray:
         """
-        Filter data for the specified month.
-
-        Override to keep daily data (rather than monthly averages).
-        """
-        logger.info(f"Filtering data for month {self.month}")
-
-        # Filter primary data
-        self.historical_data = self._filter_data_by_month(self.historical_data)
-        self.projection_data = self._filter_data_by_month(self.projection_data)
-
-        # If secondary variable exists, filter it as well
-        if hasattr(self, 'secondary_historical_data') and self.secondary_historical_data is not None:
-            self.secondary_historical_data = self._filter_data_by_month(self.secondary_historical_data)
-            self.secondary_projection_data = self._filter_data_by_month(self.secondary_projection_data)
-
-        logger.info(f"Historical data shape after filtering: {self.historical_data.shape}")
-        logger.info(f"Projection data shape after filtering: {self.projection_data.shape}")
-
-    def _preprocess_precipitation(self, data: xr.DataArray) -> xr.DataArray:
-        """
-        Preprocess precipitation data by applying wet day threshold.
+        Identify wet days in precipitation data using ETCCDI standard (>= 1mm).
 
         Args:
-            data: Precipitation data to preprocess
+            data: Precipitation data array
 
         Returns:
-            Preprocessed data with values below wet_day_threshold set to zero
+            Boolean mask where True indicates wet days
         """
-        if self.variable == 'precipitation' or (
-                self.secondary_variable == 'precipitation' and
-                (data.equals(self.secondary_historical_data) or
-                 data.equals(self.secondary_projection_data))):
-            logger.info(f"Applying wet day threshold of {self.wet_day_threshold} mm/day")
-            return xr.where(data >= self.wet_day_threshold, data, 0)
-        return data
+        return data.values >= self.wet_day_threshold
 
     def _calculate_threshold(self) -> None:
         """
-        Calculate extreme event thresholds based on historical data.
+        Calculate extreme event thresholds based on historical data for both variables.
 
-        For primary and (if present) secondary variables.
+        Follows ETCCDI methodology:
+        - For precipitation, percentiles are calculated from wet days only
+        - For temperature, both high (90th), median (50th) and low (10th) percentiles are calculated
         """
-        logger.info(f"Calculating thresholds from historical data")
+        logger.info("Calculating thresholds from historical data for both variables")
 
-        # Preprocess data if it's precipitation
-        historical_data = self._preprocess_precipitation(self.historical_data)
-
-        # Calculate historical statistics
-        if self.variable == 'precipitation':
-            total_days = len(historical_data.values)
-            wet_days = np.sum(historical_data.values > 0)  # Count non-zero days
-            wet_days_threshold = np.sum(historical_data.values >= self.wet_day_threshold)
-
-            logger.info(
-                f"Precipitation days: {wet_days}/{total_days} days ({wet_days / total_days * 100:.1f}%) > 0mm/day")
-            logger.info(
-                f"Wet days (≥{self.wet_day_threshold}mm/day): "
-                f"{wet_days_threshold}/{total_days} days "
-                f"({wet_days_threshold / total_days * 100:.1f}%)")
-
-        # Calculate primary threshold
-        self.threshold_value = float(
-            np.percentile(historical_data.values, self.threshold_percentile)
+        # Calculate temperature thresholds
+        self.temperature_threshold_value = float(
+            np.percentile(self.temperature_historical_data.values, self.temperature_threshold_percentile)
+        )
+        self.temperature_threshold_value_low = float(
+            np.percentile(self.temperature_historical_data.values, 10.0)  # 10th percentile for cold extremes
+        )
+        self.temperature_median_value = float(
+            np.percentile(self.temperature_historical_data.values, 50.0)  # Median for warm period metrics
         )
 
-        logger.info(f"Primary threshold ({self.threshold_percentile}th percentile): {self.threshold_value}")
+        logger.info(f"Temperature upper threshold ({self.temperature_threshold_percentile}th percentile): "
+                    f"{self.temperature_threshold_value}")
+        logger.info(f"Temperature lower threshold (10th percentile): {self.temperature_threshold_value_low}")
+        logger.info(f"Temperature median (50th percentile): {self.temperature_median_value}")
 
-        # Calculate secondary threshold if needed
-        if self.secondary_variable:
-            secondary_historical_data = self._preprocess_precipitation(self.secondary_historical_data)
+        # For precipitation: calculate percentiles from wet days only (>= 1mm)
+        wet_day_mask = self._identify_wet_days(self.precipitation_historical_data)
+        wet_day_values = self.precipitation_historical_data.values[wet_day_mask]
 
-            self.secondary_threshold_value = float(
-                np.percentile(secondary_historical_data.values, self.secondary_threshold_percentile)
+        if len(wet_day_values) == 0:
+            logger.warning(f"No wet days found in historical data for month {self.month}")
+            self.precipitation_threshold_value = self.wet_day_threshold
+        else:
+            self.precipitation_threshold_value = float(
+                np.percentile(wet_day_values, self.precipitation_threshold_percentile)
             )
 
-            logger.info(f"Secondary threshold ({self.secondary_threshold_percentile}th percentile): "
-                        f"{self.secondary_threshold_value}")
+        # Calculate precipitation statistics
+        total_days = len(self.precipitation_historical_data.values)
+        wet_days = np.sum(wet_day_mask)
+
+        logger.info(
+            f"Wet days (≥{self.wet_day_threshold}mm/day): "
+            f"{wet_days}/{total_days} days "
+            f"({wet_days / total_days * 100:.1f}%)")
+        logger.info(f"Precipitation threshold ({self.precipitation_threshold_percentile}th percentile): "
+                    f"{self.precipitation_threshold_value}")
 
     @staticmethod
     def _find_consecutive_runs(binary_array: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -272,149 +339,216 @@ class ExtremesAnalyzer(BaseAnalyzer):
 
         return np.max(durations) if len(durations) > 0 else 0
 
-    def _calculate_single_variable_extremes(self) -> Dict[str, np.ndarray]:
+    def _count_consecutive_days(self, binary_array: np.ndarray, min_duration: int = 1) -> int:
         """
-        Calculate single-variable extreme metrics.
+        Count total number of days in runs of consecutive True values that meet minimum duration.
+
+        Args:
+            binary_array: Boolean array indicating condition is met
+            min_duration: Minimum number of consecutive days to count
 
         Returns:
-            Dictionary with extreme metrics arrays for each year
+            Total count of days in qualifying runs
         """
-        logger.info("Calculating single-variable extreme metrics")
+        # Handle empty array or all False
+        if len(binary_array) == 0 or not np.any(binary_array):
+            return 0
 
-        # Preprocess data if needed
-        projection_data = self._preprocess_precipitation(self.projection_data)
+        # Find runs of consecutive True values
+        _, durations = self._find_consecutive_runs(binary_array)
 
-        # Get unique years
-        years = np.unique(projection_data.year.values)
+        # Sum days in runs that meet minimum duration
+        qualifying_runs = durations[durations >= min_duration]
 
-        # Initialize result arrays for all metrics
-        frequency_array = np.zeros(len(years))
-        persistence_array = np.zeros(len(years))
-        intensity_array = np.zeros(len(years))
+        return np.sum(qualifying_runs) if len(qualifying_runs) > 0 else 0
 
-        # Initialize heat wave metrics arrays (will only be populated for temperature)
-        hw_count_array = np.zeros(len(years))
-        hw_days_array = np.zeros(len(years))
-        hw_max_duration_array = np.zeros(len(years))
-        hw_mean_duration_array = np.zeros(len(years))
+    @staticmethod
+    def _calculate_running_sum(data: np.ndarray, window: int) -> np.ndarray:
+        """
+        Calculate running sum of values over specified window.
 
-        # Calculate metrics for each year
+        Args:
+            data: Input data array
+            window: Window size for running sum
+
+        Returns:
+            Array of running sums
+        """
+        # Use pandas rolling window for simplicity
+        return pd.Series(data).rolling(window=window).sum().values
+
+    def _calculate_temperature_indices(self, years: np.ndarray) -> Dict[str, np.ndarray]:
+        """
+        Calculate temperature indices adapted for daily mean temperature data.
+
+        This method computes indices that are appropriate for daily mean temperature
+        rather than the standard ETCCDI indices designed for daily maximum and minimum.
+
+        Args:
+            years: Array of unique years
+
+        Returns:
+            Dictionary with temperature indices arrays for each year
+        """
+        logger.info("Calculating temperature indices for daily mean temperature")
+
+        # Initialize result arrays
+        tm_max_array = np.zeros(len(years))  # Maximum daily mean temperature
+        tm_min_array = np.zeros(len(years))  # Minimum daily mean temperature
+        tm90p_array = np.zeros(len(years))  # Percentage of days with daily mean temperature > 90th percentile
+        tm10p_array = np.zeros(len(years))  # Percentage of days with daily mean temperature < 10th percentile
+        warm_spell_days_array = np.zeros(len(years))  # Count of days in warm spells
+        cold_spell_days_array = np.zeros(len(years))  # Count of days in cold spells
+
+        # Calculate indices for each year
         for i, year in enumerate(years):
             # Get data for this year
-            year_mask = projection_data.year == year
-            year_data = projection_data.isel(time=year_mask)
+            year_mask = self.temperature_projection_data.year == year
+            year_data = self.temperature_projection_data.isel(time=year_mask)
 
-            # Create binary array where True means exceeding threshold
-            exceeds_threshold = year_data.values > self.threshold_value
+            # Skip if no data for this year
+            if len(year_data) == 0:
+                continue
 
-            # Frequency: count days exceeding threshold
-            frequency_array[i] = np.sum(exceeds_threshold)
+            # TM_max: Maximum daily mean temperature
+            tm_max_array[i] = np.max(year_data.values)
 
-            # Persistence: max consecutive days exceeding threshold
-            persistence_array[i] = self._calculate_consecutive_days(exceeds_threshold)
+            # TM_min: Minimum daily mean temperature
+            tm_min_array[i] = np.min(year_data.values)
 
-            # Intensity: mean value of days exceeding threshold
-            if np.any(exceeds_threshold):
-                intensity_array[i] = np.mean(year_data.values[exceeds_threshold])
-            else:
-                intensity_array[i] = np.nan
+            # TM90p: Percentage of days when daily mean temperature > 90th percentile
+            tm90p_array[i] = 100.0 * np.mean(year_data.values > self.temperature_threshold_value)
 
-            # For temperature, calculate heat wave metrics
-            if self.variable == 'temperature':
-                hw_metrics = self._calculate_heat_waves(exceeds_threshold)
-                hw_count_array[i] = hw_metrics["count"]
-                hw_days_array[i] = hw_metrics["total_days"]
-                hw_max_duration_array[i] = hw_metrics["max_duration"]
-                hw_mean_duration_array[i] = hw_metrics["mean_duration"]
+            # TM10p: Percentage of days when daily mean temperature < 10th percentile
+            tm10p_array[i] = 100.0 * np.mean(year_data.values < self.temperature_threshold_value_low)
 
-        # Build result dictionary (always include basic metrics)
-        result = {
-            'frequency': frequency_array,
-            'persistence': persistence_array,
-            'intensity': intensity_array,
-            'years': years
-        }
+            # Warm spell days: Number of days in warm spells (≥ consecutive days > 90th percentile)
+            warm_days = np.array(year_data.values > self.temperature_threshold_value)
+            warm_spell_days_array[i] = self._count_consecutive_days(warm_days, self.heat_wave_min_duration)
 
-        # Add heat wave metrics only for temperature
-        if self.variable == 'temperature':
-            result.update({
-                'hw_count': hw_count_array,
-                'hw_days': hw_days_array,
-                'hw_max_duration': hw_max_duration_array,
-                'hw_mean_duration': hw_mean_duration_array
-            })
-
-        return result
-
-    def _calculate_heat_waves(self, binary_exceeded: np.ndarray) -> Dict[str, Any]:
-        """
-        Calculate heat wave metrics from binary exceedance array.
-        """
-        if len(binary_exceeded) < self.heat_wave_min_duration:
-            return {"count": 0, "total_days": 0, "max_duration": 0, "mean_duration": 0.0}
-
-        # Find runs of consecutive days
-        starts, durations = self._find_consecutive_runs(binary_exceeded)
-
-        # Filter for heat waves (min duration criteria)
-        heat_wave_indices = durations >= self.heat_wave_min_duration
-        heat_wave_durations = durations[heat_wave_indices]
-
-        # Calculate metrics
-        hw_count = len(heat_wave_durations)
-        hw_total_days = np.sum(heat_wave_durations) if hw_count > 0 else 0
-        hw_max_duration = np.max(heat_wave_durations) if hw_count > 0 else 0
-        hw_mean_duration = np.mean(heat_wave_durations) if hw_count > 0 else 0
+            # Cold spell days: Number of days in cold spells (≥ consecutive days < 10th percentile)
+            cold_days = np.array(year_data.values < self.temperature_threshold_value_low)
+            cold_spell_days_array[i] = self._count_consecutive_days(cold_days, self.heat_wave_min_duration)
 
         return {
-            "count": hw_count,
-            "total_days": hw_total_days,
-            "max_duration": hw_max_duration,
-            "mean_duration": hw_mean_duration
+            'tm_max': tm_max_array,
+            'tm_min': tm_min_array,
+            'tm90p': tm90p_array,
+            'tm10p': tm10p_array,
+            'warm_spell_days': warm_spell_days_array,
+            'cold_spell_days': cold_spell_days_array
         }
 
-    def _calculate_compound_extremes(self) -> Dict[str, np.ndarray]:
+    def _calculate_precipitation_indices(self, years: np.ndarray) -> Dict[str, np.ndarray]:
         """
-        Calculate compound extreme metrics (hot-dry and hot-wet days).
+        Calculate ETCCDI precipitation indices for monthly analysis.
+
+        This method computes standard precipitation indices on a monthly basis
+        rather than the annual scale typically used by ETCCDI.
+
+        Args:
+            years: Array of unique years
 
         Returns:
-            Dictionary with compound extreme metrics arrays for each year
+            Dictionary with precipitation indices arrays for each year
         """
-        if not self.secondary_variable:
-            logger.warning("No secondary variable specified, skipping compound extremes")
-            return {}
+        logger.info("Calculating precipitation indices")
 
-        logger.info("Calculating compound extreme metrics")
+        # Initialize result arrays
+        r95p_array = np.zeros(len(years))
+        prcptot_array = np.zeros(len(years))
+        rx1day_array = np.zeros(len(years))
+        rx5day_array = np.zeros(len(years))
+        r10mm_array = np.zeros(len(years))
+        r20mm_array = np.zeros(len(years))
+        sdii_array = np.zeros(len(years))
+        cdd_array = np.zeros(len(years))
+        cwd_array = np.zeros(len(years))
 
-        # Determine which variable is temperature and which is precipitation
-        is_temp_primary = self.variable == 'temperature'
+        # Calculate indices for each year
+        for i, year in enumerate(years):
+            # Get data for this year
+            year_mask = self.precipitation_projection_data.year == year
+            year_data = self.precipitation_projection_data.isel(time=year_mask)
 
-        # Get temperature and precipitation data
-        temp_data = self.projection_data if is_temp_primary else self.secondary_projection_data
-        precip_data = self.secondary_projection_data if is_temp_primary else self.projection_data
+            # Skip if no data for this year
+            if len(year_data) == 0:
+                continue
 
-        # Get thresholds
-        temp_threshold = self.threshold_value if is_temp_primary else self.secondary_threshold_value
-        precip_threshold = self.secondary_threshold_value if is_temp_primary else self.threshold_value
+            # Create wet day mask (≥ 1mm)
+            wet_day_mask = self._identify_wet_days(year_data)
+            wet_day_values = year_data.values[wet_day_mask]
 
-        # Preprocess precipitation data
-        precip_data = self._preprocess_precipitation(precip_data)
+            # R95p: Monthly total precipitation when daily precipitation > 95th percentile
+            very_wet_days = year_data.values > self.precipitation_threshold_value
+            r95p_array[i] = np.sum(year_data.values[very_wet_days]) if np.any(very_wet_days) else 0
 
-        # Get unique years
-        years = np.unique(temp_data.year.values)
+            # PRCPTOT: Monthly total precipitation on wet days
+            prcptot_array[i] = np.sum(wet_day_values)
+
+            # RX1day: Maximum 1-day precipitation
+            rx1day_array[i] = np.max(year_data.values) if len(year_data) > 0 else 0
+
+            # RX5day: Maximum 5-day precipitation (within month)
+            if len(year_data) >= 5:
+                rolling_sums = self._calculate_running_sum(year_data.values, 5)
+                rx5day_array[i] = np.nanmax(rolling_sums) if np.any(~np.isnan(rolling_sums)) else 0
+            else:
+                rx5day_array[i] = np.sum(year_data.values)  # Sum all days if less than 5
+
+            # R10mm: Monthly count of days when precipitation ≥ 10mm
+            r10mm_array[i] = np.sum(year_data.values >= 10.0)
+
+            # R20mm: Monthly count of days when precipitation ≥ 20mm
+            r20mm_array[i] = np.sum(year_data.values >= 20.0)
+
+            # SDII: Simple daily intensity index (mean precipitation on wet days)
+            sdii_array[i] = np.mean(wet_day_values) if len(wet_day_values) > 0 else 0
+
+            # CDD: Maximum consecutive dry days within month
+            dry_days = year_data.values < self.wet_day_threshold
+            cdd_array[i] = self._calculate_consecutive_days(dry_days)
+
+            # CWD: Maximum consecutive wet days within month
+            cwd_array[i] = self._calculate_consecutive_days(wet_day_mask)
+
+        return {
+            'r95p': r95p_array,
+            'prcptot': prcptot_array,
+            'rx1day': rx1day_array,
+            'rx5day': rx5day_array,
+            'r10mm': r10mm_array,
+            'r20mm': r20mm_array,
+            'sdii': sdii_array,
+            'cdd': cdd_array,
+            'cwd': cwd_array
+        }
+
+    def _calculate_basic_compound_extremes(self, years: np.ndarray) -> Dict[str, np.ndarray]:
+        """
+        Calculate basic compound extreme metrics (hot-dry, hot-wet, cold-wet days).
+
+        Args:
+            years: Array of unique years
+
+        Returns:
+            Dictionary with basic compound extreme metrics arrays for each year
+        """
+        logger.info("Calculating basic compound extreme metrics")
 
         # Initialize result arrays
         hot_dry_array = np.zeros(len(years))
         hot_wet_array = np.zeros(len(years))
+        cold_wet_array = np.zeros(len(years))
 
         # Calculate metrics for each year
         for i, year in enumerate(years):
-            # Get data for this year
-            temp_year_mask = temp_data.year == year
-            year_temp = temp_data.isel(time=temp_year_mask)
+            # Get temperature and precipitation data for this year
+            temp_year_mask = self.temperature_projection_data.year == year
+            year_temp = self.temperature_projection_data.isel(time=temp_year_mask)
 
-            precip_year_mask = precip_data.year == year
-            year_precip = precip_data.isel(time=precip_year_mask)
+            precip_year_mask = self.precipitation_projection_data.year == year
+            year_precip = self.precipitation_projection_data.isel(time=precip_year_mask)
 
             # Ensure matching dimensions
             if len(year_temp) != len(year_precip):
@@ -422,35 +556,119 @@ class ExtremesAnalyzer(BaseAnalyzer):
                 continue
 
             # Create binary arrays for conditions
-            hot_condition = year_temp.values > temp_threshold
-            dry_condition = year_precip.values < self.dry_day_threshold
-            wet_condition = year_precip.values > precip_threshold
+            hot_condition = year_temp.values > self.temperature_threshold_value  # Warm days
+            cold_condition = year_temp.values < self.temperature_threshold_value_low  # Cold days
+            dry_condition = year_precip.values < self.wet_day_threshold  # Dry days
+            wet_condition = year_precip.values > self.precipitation_threshold_value  # Very wet days
 
-            # Count hot-dry days
+            # Count compound extreme days
             hot_dry_days = np.logical_and(hot_condition, dry_condition)
             hot_dry_array[i] = np.sum(hot_dry_days)
 
-            # Count hot-wet days
             hot_wet_days = np.logical_and(hot_condition, wet_condition)
             hot_wet_array[i] = np.sum(hot_wet_days)
+
+            cold_wet_days = np.logical_and(cold_condition, wet_condition)
+            cold_wet_array[i] = np.sum(cold_wet_days)
 
         return {
             'hot_dry_frequency': hot_dry_array,
             'hot_wet_frequency': hot_wet_array,
-            'years': years
+            'cold_wet_frequency': cold_wet_array
+        }
+
+    def _calculate_advanced_compound_metrics(self, years: np.ndarray) -> Dict[str, np.ndarray]:
+        """
+        Calculate advanced compound extreme metrics.
+
+        This method computes three compound extreme indices:
+        1. CWHD: Consecutive Wet-Hot Days - maximum number of consecutive days
+                 when both precipitation exceeds 95th percentile and
+                 temperature exceeds 90th percentile
+        2. WSPI: Warm-Period Precipitation Intensity - maximum 5-day precipitation
+                 during periods when temperature exceeds median
+        3. WPD: Warm Precipitation Days - count of days with precipitation >1mm
+                when temperature >0°C
+
+        Args:
+            years: Array of unique years
+
+        Returns:
+            Dictionary with advanced compound extreme metrics arrays for each year
+        """
+        logger.info("Calculating advanced compound extreme metrics")
+
+        # Initialize result arrays
+        cwhd_array = np.zeros(len(years))  # Consecutive Wet-Hot Days
+        wspi_array = np.zeros(len(years))  # Warm-Period Precipitation Intensity
+        wpd_array = np.zeros(len(years))  # Warm Precipitation Days
+
+        # Calculate metrics for each year
+        for i, year in enumerate(years):
+            # Get temperature and precipitation data for this year
+            temp_year_mask = self.temperature_projection_data.year == year
+            year_temp = self.temperature_projection_data.isel(time=temp_year_mask)
+
+            precip_year_mask = self.precipitation_projection_data.year == year
+            year_precip = self.precipitation_projection_data.isel(time=precip_year_mask)
+
+            # Ensure matching dimensions
+            if len(year_temp) != len(year_precip):
+                logger.warning(f"Mismatched dimensions for year {year}, skipping")
+                continue
+
+            # 1. Calculate CWHD: Consecutive Wet-Hot Days
+            # Define days that are both very wet and hot
+            wet_hot_days = np.logical_and(
+                year_precip.values > self.precipitation_threshold_value,  # Very wet days
+                year_temp.values > self.temperature_threshold_value  # Hot days
+            )
+
+            # Find maximum consecutive wet-hot days
+            cwhd_array[i] = self._calculate_consecutive_days(wet_hot_days)
+
+            # 2. Calculate WSPI: Warm-Period Precipitation Intensity
+            # Identify warm days (above median temperature)
+            warm_days = year_temp.values > self.temperature_median_value
+
+            # Find runs of consecutive warm days
+            warm_starts, warm_durations = self._find_consecutive_runs(np.array(warm_days))
+            wspi_value = 0.0
+
+            # For each warm period of at least 5 days
+            for start, duration in zip(warm_starts, warm_durations):
+                if duration >= 5:
+                    # Calculate maximum 5-day precipitation in this warm period
+                    for j in range(0, duration - 4):
+                        # Calculate 5-day sum starting at each position in warm period
+                        precip_window = year_precip.values[start + j:start + j + 5]
+                        window_sum = np.sum(precip_window)
+                        wspi_value = max(wspi_value, window_sum)
+
+            wspi_array[i] = wspi_value
+
+            # 3. Calculate WPD: Warm Precipitation Days
+            # Count days with precipitation >1mm when temperature >0°C
+            freezing_temp_kelvin = 273.15  # 0°C in Kelvin
+            above_freezing = year_temp.values > freezing_temp_kelvin
+            above_wetday = year_precip.values >= self.wet_day_threshold
+
+            # Count days meeting both conditions
+            wpd_array[i] = np.sum(np.logical_and(above_freezing, above_wetday))
+
+        return {
+            'cwhd': cwhd_array,
+            'wspi': wspi_array,
+            'wpd': wpd_array
         }
 
     def compute(self) -> Dict[str, Any]:
         """
-        Compute climate extreme metrics.
+        Compute climate extreme indices following adapted ETCCDI methodology for both
+        temperature and precipitation, including compound extreme indices.
 
         Returns:
-            Dictionary containing analysis results, including:
-                - frequency: Number of days per month exceeding threshold
-                - persistence: Maximum consecutive days above threshold
-                - intensity: Mean value of days exceeding threshold
-                - heat wave metrics (if temperature variable)
-                - compound extremes (if secondary variable provided)
+            Dictionary containing analysis results with all calculated indices.
         """
         if not self.is_data_loaded:
             logger.info("Data not loaded. Loading data...")
@@ -459,56 +677,69 @@ class ExtremesAnalyzer(BaseAnalyzer):
         # Calculate thresholds from historical data
         self._calculate_threshold()
 
-        # Calculate single-variable extremes
-        single_var_results = self._calculate_single_variable_extremes()
+        # Get unique years from projection data
+        years = np.unique(self.temperature_projection_data.year.values)
 
-        # Calculate compound extremes if applicable
-        compound_results = self._calculate_compound_extremes() if self.secondary_variable else {}
+        # Calculate temperature indices
+        temp_indices = self._calculate_temperature_indices(years)
 
-        # Store results in instance variables
-        self.frequency = single_var_results['frequency']
-        self.persistence = single_var_results['persistence']
-        self.intensity = single_var_results['intensity']
+        # Store temperature results in instance variables
+        self.tm_max = temp_indices['tm_max']
+        self.tm_min = temp_indices['tm_min']
+        self.tm90p = temp_indices['tm90p']
+        self.tm10p = temp_indices['tm10p']
+        self.warm_spell_days = temp_indices['warm_spell_days']
+        self.cold_spell_days = temp_indices['cold_spell_days']
 
-        if self.secondary_variable:
-            self.compound_hot_dry = compound_results.get('hot_dry_frequency')
-            self.compound_hot_wet = compound_results.get('hot_wet_frequency')
+        # Calculate precipitation indices
+        precip_indices = self._calculate_precipitation_indices(years)
 
-        # Prepare results dictionary for saving
-        years = single_var_results['years']
+        # Store precipitation results in instance variables
+        self.r95p = precip_indices['r95p']
+        self.prcptot = precip_indices['prcptot']
+        self.rx1day = precip_indices['rx1day']
+        self.rx5day = precip_indices['rx5day']
+        self.r10mm = precip_indices['r10mm']
+        self.r20mm = precip_indices['r20mm']
+        self.sdii = precip_indices['sdii']
+        self.cdd = precip_indices['cdd']
+        self.cwd = precip_indices['cwd']
 
+        # Calculate basic compound extremes
+        basic_compound_results = self._calculate_basic_compound_extremes(years)
+
+        # Store basic compound results
+        self.hot_dry_frequency = basic_compound_results['hot_dry_frequency']
+        self.hot_wet_frequency = basic_compound_results['hot_wet_frequency']
+        self.cold_wet_frequency = basic_compound_results['cold_wet_frequency']
+
+        # Calculate advanced compound metrics
+        advanced_compound_results = self._calculate_advanced_compound_metrics(years)
+
+        # Store advanced compound results
+        self.cwhd = advanced_compound_results['cwhd']
+        self.wspi = advanced_compound_results['wspi']
+        self.wpd = advanced_compound_results['wpd']
+
+        # Prepare results dictionary
+        results = self._prepare_results_dict(years)
+
+        logger.info("Extremes computation complete")
+
+        return results
+
+    def _prepare_results_dict(self, years: np.ndarray) -> Dict[str, Any]:
+        """
+        Prepare comprehensive results dictionary for saving to netCDF.
+
+        Args:
+            years: Array of years
+
+        Returns:
+            Dictionary formatted for xarray dataset creation
+        """
+        # Create base results dictionary with coordinates
         results = {
-            'data_vars': {
-                'frequency': {
-                    'dims': ['year'],
-                    'data': self.frequency,
-                    'attrs': {
-                        'long_name': f'Frequency of {self.variable} extremes',
-                        'units': 'days per month',
-                        'description': (f'Number of days per month exceeding the '
-                                        f'{self.threshold_percentile}th percentile')
-                    }
-                },
-                'persistence': {
-                    'dims': ['year'],
-                    'data': self.persistence,
-                    'attrs': {
-                        'long_name': f'Persistence of {self.variable} extremes',
-                        'units': 'days',
-                        'description': (f'Maximum consecutive days per month exceeding the '
-                                        f'{self.threshold_percentile}th percentile')
-                    }
-                },
-                'intensity': {
-                    'dims': ['year'],
-                    'data': self.intensity,
-                    'attrs': {
-                        'long_name': f'Intensity of {self.variable} extremes',
-                        'units': 'K' if self.variable == 'temperature' else 'mm/day',
-                        'description': f'Mean value of days exceeding the {self.threshold_percentile}th percentile'
-                    }
-                }
-            },
             'coords': {
                 'year': {
                     'dims': ['year'],
@@ -520,89 +751,268 @@ class ExtremesAnalyzer(BaseAnalyzer):
                 }
             },
             'attrs': {
-                'description': f'Climate extremes for {self.variable}, {self.experiment}, month {self.month}',
+                'description': f'Climate extremes for {self.experiment}, month {self.month}',
                 'historical_period': '1995-2014',
                 'projection_period': '2015-2100',
-                'threshold_percentile': self.threshold_percentile,
-                'threshold_value': self.threshold_value
+                'methodology': 'Adapted ETCCDI for daily mean temperature data',
+                'temperature_threshold_percentile': self.temperature_threshold_percentile,
+                'temperature_threshold_value': self.temperature_threshold_value,
+                'temperature_threshold_value_low': self.temperature_threshold_value_low,
+                'temperature_median_value': self.temperature_median_value,
+                'precipitation_threshold_percentile': self.precipitation_threshold_percentile,
+                'precipitation_threshold_value': self.precipitation_threshold_value,
+                'wet_day_threshold': self.wet_day_threshold,
+                'dry_day_threshold': self.dry_day_threshold,
+                'heat_wave_min_duration': self.heat_wave_min_duration
+            },
+            'data_vars': {}
+        }
+
+        # Add temperature indices appropriate for daily mean data
+        results['data_vars']['tm_max'] = {
+            'dims': ['year'],
+            'data': self.tm_max,
+            'attrs': {
+                'long_name': 'Maximum daily mean temperature',
+                'units': 'K',
+                'description': 'Maximum value of daily mean temperature in the month'
             }
         }
 
-        # Add heat wave metrics for temperature variables
-        if self.variable == 'temperature':
-            results['data_vars']['hw_count'] = {
-                'dims': ['year'],
-                'data': single_var_results['hw_count'],
-                'attrs': {
-                    'long_name': 'Heat wave count',
-                    'units': 'events per month',
-                    'description': (f'Number of heat wave events per month '
-                                    f'(≥{self.heat_wave_min_duration} consecutive days above threshold)')
-                }
+        results['data_vars']['tm_min'] = {
+            'dims': ['year'],
+            'data': self.tm_min,
+            'attrs': {
+                'long_name': 'Minimum daily mean temperature',
+                'units': 'K',
+                'description': 'Minimum value of daily mean temperature in the month'
             }
+        }
 
-            results['data_vars']['hw_days'] = {
-                'dims': ['year'],
-                'data': single_var_results['hw_days'],
-                'attrs': {
-                    'long_name': 'Heat wave days',
-                    'units': 'days per month',
-                    'description': f'Total number of days in heat wave conditions per month'
-                }
+        results['data_vars']['tm90p'] = {
+            'dims': ['year'],
+            'data': self.tm90p,
+            'attrs': {
+                'long_name': 'Warm days (daily mean)',
+                'units': '%',
+                'description': 'Percentage of days when daily mean temperature > 90th percentile'
             }
+        }
 
-            results['data_vars']['hw_max_duration'] = {
-                'dims': ['year'],
-                'data': single_var_results['hw_max_duration'],
-                'attrs': {
-                    'long_name': 'Maximum heat wave duration',
-                    'units': 'days',
-                    'description': f'Duration of longest heat wave event in the month'
-                }
+        results['data_vars']['tm10p'] = {
+            'dims': ['year'],
+            'data': self.tm10p,
+            'attrs': {
+                'long_name': 'Cold days (daily mean)',
+                'units': '%',
+                'description': 'Percentage of days when daily mean temperature < 10th percentile'
             }
+        }
 
-            results['data_vars']['hw_mean_duration'] = {
-                'dims': ['year'],
-                'data': single_var_results['hw_mean_duration'],
-                'attrs': {
-                    'long_name': 'Mean heat wave duration',
-                    'units': 'days',
-                    'description': f'Average duration of heat wave events in the month'
-                }
+        results['data_vars']['warm_spell_days'] = {
+            'dims': ['year'],
+            'data': self.warm_spell_days,
+            'attrs': {
+                'long_name': 'Warm spell days',
+                'units': 'days',
+                'description': (f'Monthly count of days in spells with at least {self.heat_wave_min_duration} '
+                                'consecutive days when daily mean temperature > 90th percentile')
             }
+        }
 
-            # Add heat wave definition to attributes
-            results['attrs']['heat_wave_min_duration'] = self.heat_wave_min_duration
-
-        # Add compound extremes if applicable
-        if self.secondary_variable:
-            results['data_vars']['hot_dry_frequency'] = {
-                'dims': ['year'],
-                'data': self.compound_hot_dry,
-                'attrs': {
-                    'long_name': 'Frequency of hot-dry days',
-                    'units': 'days per month',
-                    'description': f'Number of days per month with temperature above the {self.threshold_percentile}th '
-                                   f'percentile and precipitation below {self.dry_day_threshold} mm/day'
-                }
+        results['data_vars']['cold_spell_days'] = {
+            'dims': ['year'],
+            'data': self.cold_spell_days,
+            'attrs': {
+                'long_name': 'Cold spell days',
+                'units': 'days',
+                'description': (f'Monthly count of days in spells with at least {self.heat_wave_min_duration} '
+                                'consecutive days when daily mean temperature < 10th percentile')
             }
+        }
 
-            results['data_vars']['hot_wet_frequency'] = {
-                'dims': ['year'],
-                'data': self.compound_hot_wet,
-                'attrs': {
-                    'long_name': 'Frequency of hot-wet days',
-                    'units': 'days per month',
-                    'description': (f'Number of days per month with temperature above the '
-                                    f'{self.threshold_percentile}th percentile and precipitation above the '
-                                    f'{self.secondary_threshold_percentile}th percentile')
-                }
+        # Add precipitation indices
+        results['data_vars']['r95p'] = {
+            'dims': ['year'],
+            'data': self.r95p,
+            'attrs': {
+                'long_name': 'Very wet days',
+                'units': 'mm',
+                'description': (f'Monthly total precipitation when daily precipitation > '
+                                f'{self.precipitation_threshold_percentile}th percentile of wet days')
             }
+        }
 
-            results['attrs']['secondary_variable'] = self.secondary_variable
-            results['attrs']['secondary_threshold_percentile'] = self.secondary_threshold_percentile
-            results['attrs']['secondary_threshold_value'] = self.secondary_threshold_value
+        results['data_vars']['prcptot'] = {
+            'dims': ['year'],
+            'data': self.prcptot,
+            'attrs': {
+                'long_name': 'Total precipitation',
+                'units': 'mm',
+                'description': 'Monthly total precipitation on wet days (≥ 1mm)'
+            }
+        }
 
-        logger.info("Extremes computation complete")
+        results['data_vars']['rx1day'] = {
+            'dims': ['year'],
+            'data': self.rx1day,
+            'attrs': {
+                'long_name': 'Maximum 1-day precipitation',
+                'units': 'mm',
+                'description': 'Monthly maximum 1-day precipitation'
+            }
+        }
+
+        results['data_vars']['rx5day'] = {
+            'dims': ['year'],
+            'data': self.rx5day,
+            'attrs': {
+                'long_name': 'Maximum 5-day precipitation',
+                'units': 'mm',
+                'description': 'Monthly maximum consecutive 5-day precipitation'
+            }
+        }
+
+        results['data_vars']['r10mm'] = {
+            'dims': ['year'],
+            'data': self.r10mm,
+            'attrs': {
+                'long_name': 'Heavy precipitation days',
+                'units': 'days',
+                'description': 'Monthly count of days when precipitation ≥ 10mm'
+            }
+        }
+
+        results['data_vars']['r20mm'] = {
+            'dims': ['year'],
+            'data': self.r20mm,
+            'attrs': {
+                'long_name': 'Very heavy precipitation days',
+                'units': 'days',
+                'description': 'Monthly count of days when precipitation ≥ 20mm'
+            }
+        }
+
+        results['data_vars']['sdii'] = {
+            'dims': ['year'],
+            'data': self.sdii,
+            'attrs': {
+                'long_name': 'Simple daily intensity index',
+                'units': 'mm/day',
+                'description': 'Monthly mean precipitation on wet days'
+            }
+        }
+
+        results['data_vars']['cdd'] = {
+            'dims': ['year'],
+            'data': self.cdd,
+            'attrs': {
+                'long_name': 'Consecutive dry days',
+                'units': 'days',
+                'description': 'Maximum number of consecutive days with precipitation < 1mm within the month'
+            }
+        }
+
+        results['data_vars']['cwd'] = {
+            'dims': ['year'],
+            'data': self.cwd,
+            'attrs': {
+                'long_name': 'Consecutive wet days',
+                'units': 'days',
+                'description': 'Maximum number of consecutive days with precipitation ≥ 1mm within the month'
+            }
+        }
+
+        # Add basic compound extremes
+        results['data_vars']['hot_dry_frequency'] = {
+            'dims': ['year'],
+            'data': self.hot_dry_frequency,
+            'attrs': {
+                'long_name': 'Frequency of hot-dry days',
+                'units': 'days',
+                'description': f'Number of days with daily mean temperature above the '
+                               f'{self.temperature_threshold_percentile}th '
+                               f'percentile and precipitation below {self.wet_day_threshold} mm/day'
+            }
+        }
+
+        results['data_vars']['hot_wet_frequency'] = {
+            'dims': ['year'],
+            'data': self.hot_wet_frequency,
+            'attrs': {
+                'long_name': 'Frequency of hot-wet days',
+                'units': 'days',
+                'description': f'Number of days with daily mean temperature above the '
+                               f'{self.temperature_threshold_percentile}th '
+                               f'percentile and precipitation above the '
+                               f'{self.precipitation_threshold_percentile}th percentile'
+            }
+        }
+
+        results['data_vars']['cold_wet_frequency'] = {
+            'dims': ['year'],
+            'data': self.cold_wet_frequency,
+            'attrs': {
+                'long_name': 'Frequency of cold-wet days',
+                'units': 'days',
+                'description': f'Number of days with daily mean temperature below the 10th percentile '
+                               f'and precipitation above the {self.precipitation_threshold_percentile}th percentile'
+            }
+        }
+
+        # Add advanced compound metrics
+        results['data_vars']['cwhd'] = {
+            'dims': ['year'],
+            'data': self.cwhd,
+            'attrs': {
+                'long_name': 'Consecutive wet-hot days',
+                'units': 'days',
+                'description': f'Maximum number of consecutive days with both precipitation above the '
+                               f'{self.precipitation_threshold_percentile}th percentile and daily mean temperature '
+                               f'above the {self.temperature_threshold_percentile}th percentile'
+            }
+        }
+
+        results['data_vars']['wspi'] = {
+            'dims': ['year'],
+            'data': self.wspi,
+            'attrs': {
+                'long_name': 'Warm-period precipitation intensity',
+                'units': 'mm',
+                'description': 'Maximum 5-day precipitation total that occurs during periods when daily mean '
+                               'temperature exceeds the monthly median temperature'
+            }
+        }
+
+        results['data_vars']['wpd'] = {
+            'dims': ['year'],
+            'data': self.wpd,
+            'attrs': {
+                'long_name': 'Warm precipitation days',
+                'units': 'days',
+                'description': 'Number of days with precipitation ≥1mm occurring when daily mean temperature '
+                               'is above freezing (0°C)'
+            }
+        }
 
         return results
+
+    def save_results(self, results: Dict[str, Any], filename: str = None) -> Path:
+        """
+        Save results to a single NetCDF file.
+
+        Args:
+            results: Dictionary with results data
+            filename: Optional filename override
+
+        Returns:
+            Path to output file
+        """
+        if filename is None:
+            # Create default filename if not provided
+            filename = f"extremes_{self.experiment}_month{self.month}.nc"
+
+        # Use parent class method to save the file
+        output_file = super().save_results(results, filename=filename)
+
+        return output_file

@@ -2,14 +2,18 @@
 """
 CMIP6 Climate Extremes Computation Script
 
-This script computes extreme event metrics from CMIP6 climate data for specific
-point locations. It supports both temperature and precipitation variables, and
-both ssp245 and ssp585 experiments, as well as compound extreme analyses.
+This script computes climate extreme indices from CMIP6 data using an adapted
+methodology based on the Expert Team on Climate Change Detection and Indices (ETCCDI).
+It processes both temperature and precipitation variables together, applying:
+
+1. Standard ETCCDI precipitation indices adapted for monthly analysis
+2. Modified temperature indices appropriate for daily mean temperature data
+3. Basic and advanced compound extreme indices capturing temperature-precipitation interactions
 
 Example usage:
-    python compute_extremes.py --variable temperature --experiment ssp245 --month 7
-    python compute_extremes.py --variable precipitation --experiment ssp585 --month 1 --threshold 90
-    python compute_extremes.py --variable temperature --secondary-variable precipitation --experiment ssp245 --month 7
+    python compute_extremes.py --experiment ssp245 --month 7
+    python compute_extremes.py --experiment ssp585 --month 1 --temperature-threshold 90 --precipitation-threshold 95
+    python compute_extremes.py --all-experiments --month 7 --heat-wave-min-duration 3
 """
 
 import sys
@@ -38,50 +42,43 @@ logger = logging.getLogger("compute_extremes")
 def main():
     """Main execution function."""
     # Parse command-line arguments
-    parser = argparse.ArgumentParser(description="Compute climate extreme metrics from CMIP6 data")
+    parser = argparse.ArgumentParser(
+        description="Compute standardized climate extreme indices from CMIP6 data (adapted ETCCDI methodology)"
+    )
 
     # Define required arguments
-    parser.add_argument("--variable", type=str, choices=["temperature", "precipitation"],
-                        help="Primary climate variable to analyze")
     parser.add_argument("--experiment", type=str, choices=["ssp245", "ssp585"],
                         help="Experiment to analyze")
     parser.add_argument("--month", type=int, required=True, choices=range(1, 13),
                         help="Month to analyze (1-12)")
 
-    # Define compound analysis arguments
-    parser.add_argument("--secondary-variable", type=str, choices=["temperature", "precipitation"],
-                        help="Secondary variable for compound extreme analysis")
-
     # Define optional arguments
-    parser.add_argument("--all-combinations", action="store_true",
-                        help="Analyze all variable and experiment combinations")
+    parser.add_argument("--all-experiments", action="store_true",
+                        help="Analyze all experiments (ssp245 and ssp585)")
     parser.add_argument("--input-dir", type=str,
                         help="Custom input directory")
     parser.add_argument("--output-dir", type=str,
                         help="Custom output directory")
 
     # Threshold parameters
-    parser.add_argument("--threshold", type=float, default=95.0,
-                        help="Percentile threshold for extreme event detection (default: 95.0)")
-    parser.add_argument("--secondary-threshold", type=float, default=95.0,
-                        help="Percentile threshold for secondary variable (default: 95.0)")
+    parser.add_argument("--temperature-threshold", type=float, default=90.0,
+                        help="Percentile threshold for temperature extremes (default: 90.0)")
+    parser.add_argument("--precipitation-threshold", type=float, default=95.0,
+                        help="Percentile threshold for precipitation extremes (default: 95.0)")
     parser.add_argument("--wet-day-threshold", type=float, default=1.0,
                         help="Threshold for wet day identification (mm/day)")
     parser.add_argument("--dry-day-threshold", type=float, default=1.0,
                         help="Threshold for dry day identification in hot-dry analysis (mm/day)")
 
     # Heat wave parameters
-    parser.add_argument("--heat-wave-min-duration", type=int, default=3,
-                        help="Minimum number of consecutive days for heat wave detection (default: 3)")
+    parser.add_argument("--heat-wave-min-duration", type=int, default=6,
+                        help="Minimum number of consecutive days for warm/cold spell detection (default: 6 per ETCCDI)")
 
     args = parser.parse_args()
 
     # Validate arguments
-    if not args.all_combinations and (args.variable is None or args.experiment is None):
-        parser.error("Either --all-combinations or both --variable and --experiment must be provided")
-
-    if args.secondary_variable and args.secondary_variable == args.variable:
-        parser.error("Primary and secondary variables must be different")
+    if not args.all_experiments and args.experiment is None:
+        parser.error("Either --all-experiments or --experiment must be provided")
 
     # Determine project root directory
     project_root = Path(__file__).resolve().parents[1]
@@ -93,39 +90,26 @@ def main():
     # Create output directory if it doesn't exist
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Define combinations to analyze
-    variables = ["temperature", "precipitation"]
-    experiments = ["ssp245", "ssp585"]
+    # Define experiments to analyze
+    experiments = ["ssp245", "ssp585"] if args.all_experiments else [args.experiment]
 
-    if args.all_combinations:
-        if args.secondary_variable:
-            logger.warning("--all-combinations flag ignores --secondary-variable")
+    logger.info(f"Analyzing {len(experiments)} experiments for month {args.month}")
 
-        combinations = [(var, exp, None) for var in variables for exp in experiments]
-    else:
-        combinations = [(args.variable, args.experiment, args.secondary_variable)]
-
-    logger.info(f"Analyzing {len(combinations)} combinations for month {args.month}")
-
-    # Process each combination
-    for variable, experiment, secondary_variable in combinations:
-        logger.info(f"Processing {variable}, {experiment}, month {args.month}")
-        if secondary_variable:
-            logger.info(f"Secondary variable: {secondary_variable}")
+    # Process each experiment
+    for experiment in experiments:
+        logger.info(f"Processing {experiment}, month {args.month}")
 
         # Create analyzer
         analyzer = ExtremesAnalyzer(
-            variable=variable,
             experiment=experiment,
             month=args.month,
             input_dir=input_dir,
             output_dir=output_dir,
-            threshold_percentile=args.threshold,
-            secondary_variable=secondary_variable,
-            secondary_threshold_percentile=args.secondary_threshold,
+            temperature_threshold_percentile=args.temperature_threshold,
+            precipitation_threshold_percentile=args.precipitation_threshold,
             wet_day_threshold=args.wet_day_threshold,
             dry_day_threshold=args.dry_day_threshold,
-            heat_wave_min_duration=args.heat_wave_min_duration,
+            heat_wave_min_duration=args.heat_wave_min_duration
         )
 
         # Compute extremes
@@ -133,7 +117,6 @@ def main():
 
         # Save results
         output_file = analyzer.save_results(results)
-
         logger.info(f"Results saved to {output_file}")
 
     logger.info("Extremes computation completed")
