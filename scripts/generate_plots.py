@@ -2,21 +2,62 @@
 """
 CMIP6 Climate Visualization Script
 
-This script creates visualizations from processed CMIP6 climate data. It supports
-both anomaly decomposition and extreme event visualizations.
+This script creates visualizations from processed CMIP6 climate data with support for:
+1. Multi-scale anomaly decomposition
+2. Time series analysis of individual climate metrics
+3. Monthly heatmaps for temporal patterns
+4. Location maps for geographical context
+
+Workflow:
+- Select visualization type with --viz-type
+- Specify base variable (temperature/precipitation) with --variable
+- Choose experiment scenario (ssp245/ssp585) with --experiment
+- For time series: specify month (--month) and metric (--metric)
+- For heatmaps: specify metric (--metric) and optional month selection (--months)
+- Optionally override colors with --color-scheme
+- Use --consistent-range to create paired plots with matching y-axis scales
 
 Example usage:
-    python generate_plots.py --variable temperature --experiment ssp245 --month 7 --plot-type anomaly
-    python generate_plots.py --variable temperature --experiment ssp585 --month 7 --plot-type heatwave
-    python generate_plots.py --variable temperature --experiment ssp585 --plot-type heatmap
-    python generate_plots.py --variable temperature --experiment ssp585 --month 7 --plot-type location
-    python generate_plots.py --all-plots --variable temperature --experiment ssp585
+    # Temperature examples
+    # Anomaly decomposition
+    python generate_plots.py --viz-type anomaly --variable temperature --experiment ssp245 --month 7
+
+    # Time series for temperature metric
+    python generate_plots.py --viz-type timeseries --variable temperature --experiment ssp585 --month 7 --metric warm_spell_days
+
+    # Paired time series with consistent y-axis range (generates both SSP245 and SSP585 plots)
+    python generate_plots.py --viz-type timeseries --variable temperature --month 7 --metric tm_max --consistent-range
+
+    # Heatmap for temperature metric across summer months
+    python generate_plots.py --viz-type heatmap --variable temperature --experiment ssp585 --metric tm90p --months 6-8
+
+    # Precipitation examples
+    # Time series for precipitation metric
+    python generate_plots.py --viz-type timeseries --variable precipitation --experiment ssp245 --month 1 --metric rx1day
+
+    # Paired time series with consistent y-axis (for direct scenario comparison)
+    python generate_plots.py --viz-type timeseries --variable precipitation --month 10 --metric rx1day --consistent-range
+
+    # Heatmap for precipitation metric across all months
+    python generate_plots.py --viz-type heatmap --variable precipitation --experiment ssp585 --metric r95p --months all
+
+    # Compound metric examples
+    # Time series for compound temperature-precipitation metric
+    python generate_plots.py --viz-type timeseries --variable temperature --experiment ssp585 --month 8 --metric hot_dry_frequency
+
+    # Heatmap for compound metric with custom color scheme
+    python generate_plots.py --viz-type heatmap --variable temperature --experiment ssp585 --metric hot_wet_frequency --months all --color-scheme purples
+
+    # Location map
+    python generate_plots.py --viz-type location --variable temperature --experiment ssp245 --month 7
 """
 
 import sys
 import logging
 import argparse
+import numpy as np
 from pathlib import Path
+from typing import List
 
 # Import project modules
 from src.visualization.timeseries import TimeSeriesPlotter
@@ -39,6 +80,202 @@ logging.basicConfig(
 )
 logger = logging.getLogger("generate_plots")
 
+# Available metrics list - used for validation
+AVAILABLE_METRICS = [
+    # Temperature metrics
+    'tm_max', 'tm_min', 'tm90p', 'tm10p', 'warm_spell_days', 'cold_spell_days',
+
+    # Precipitation metrics
+    'r95p', 'prcptot', 'rx1day', 'rx5day', 'r10mm', 'r20mm', 'sdii', 'cdd', 'cwd',
+
+    # Compound metrics
+    'hot_dry_frequency', 'hot_wet_frequency', 'cold_wet_frequency', 'cwhd', 'wspi', 'wpd',
+
+    # Legacy metrics
+    'frequency', 'persistence', 'intensity', 'hw_count', 'hw_days', 'hw_max_duration', 'hw_mean_duration'
+]
+
+# Define color scheme options
+COLOR_SCHEMES = ['reds', 'blues', 'purples']
+
+
+def parse_months_argument(months_str: str) -> List[int]:
+    """
+    Parse the months argument to a list of integers.
+
+    Args:
+        months_str: String representation of months (e.g., "1,2,3", "1-6", "all")
+
+    Returns:
+        List of month integers
+    """
+    if months_str.lower() == 'all':
+        return list(range(1, 13))
+
+    # Check for range notation
+    if '-' in months_str:
+        try:
+            start, end = map(int, months_str.split('-'))
+            if 1 <= start <= 12 and 1 <= end <= 12:
+                return list(range(start, end + 1))
+            else:
+                raise ValueError("Month range must be between 1 and 12")
+        except ValueError:
+            raise ValueError(f"Invalid month range format: {months_str}")
+
+    # Check for comma-separated list
+    if ',' in months_str:
+        try:
+            months = [int(m) for m in months_str.split(',')]
+            if all(1 <= m <= 12 for m in months):
+                return months
+            else:
+                raise ValueError("All months must be between 1 and 12")
+        except ValueError:
+            raise ValueError(f"Invalid month list format: {months_str}")
+
+    # Try single month
+    try:
+        month = int(months_str)
+        if 1 <= month <= 12:
+            return [month]
+        else:
+            raise ValueError("Month must be between 1 and 12")
+    except ValueError:
+        raise ValueError(f"Invalid month format: {months_str}")
+
+
+def generate_paired_metric_timeseries(variable, metric, month, input_dir, output_dir,
+                                      color_scheme=None, formats=None, dpi=300, figsize=(12, 10)):
+    """
+    Generate time series plots for both SSP245 and SSP585 scenarios with consistent y-axis.
+
+    Args:
+        variable: Climate variable to analyze
+        metric: Specific metric to visualize
+        month: Month to analyze (1-12)
+        input_dir: Directory containing input data
+        output_dir: Directory to store output figures
+        color_scheme: Color scheme to use
+        formats: Output file formats
+        dpi: Resolution for raster formats
+        figsize: Figure size (width, height) in inches
+    """
+    logger.info(f"Generating paired time series plots for {metric}, month {month} with consistent y-axis")
+
+    # Create temporary plotters to load data for both scenarios
+    temp_plotter_ssp245 = ExtremeStatisticsPlotter(
+        variable=variable,
+        experiment='ssp245',
+        month=month,
+        input_dir=input_dir,
+        output_dir=output_dir,
+        metric=metric,
+        color_scheme=color_scheme,
+        dpi=dpi,
+        figsize=figsize
+    )
+
+    temp_plotter_ssp585 = ExtremeStatisticsPlotter(
+        variable=variable,
+        experiment='ssp585',
+        month=month,
+        input_dir=input_dir,
+        output_dir=output_dir,
+        metric=metric,
+        color_scheme=color_scheme,
+        dpi=dpi,
+        figsize=figsize
+    )
+
+    # Load data for both scenarios
+    temp_plotter_ssp245.load_data(data_type='extremes')
+    temp_plotter_ssp585.load_data(data_type='extremes')
+
+    # Extract metric data to determine consistent y-axis limits
+    data_ssp245 = temp_plotter_ssp245.data[metric].values
+    data_ssp585 = temp_plotter_ssp585.data[metric].values
+
+    # Handle timedelta data type if present for either dataset
+    try:
+        if hasattr(data_ssp245, 'dtype') and np.issubdtype(data_ssp245.dtype, np.timedelta64):
+            data_ssp245 = data_ssp245.astype('timedelta64[D]').astype(float)
+        if hasattr(data_ssp585, 'dtype') and np.issubdtype(data_ssp585.dtype, np.timedelta64):
+            data_ssp585 = data_ssp585.astype('timedelta64[D]').astype(float)
+    except (TypeError, ValueError):
+        pass
+
+    # Determine global min and max values with a small buffer (5%)
+    all_data = np.concatenate([data_ssp245, data_ssp585])
+    valid_data = all_data[~np.isnan(all_data)]
+
+    if len(valid_data) > 0:
+        global_min = np.min(valid_data)
+        global_max = np.max(valid_data)
+
+        # Add 5% buffer on both ends
+        y_range = global_max - global_min
+        y_min = global_min - 0.05 * y_range
+        y_max = global_max + 0.05 * y_range
+
+        logger.info(f"Determined consistent y-axis range: {y_min:.2f} to {y_max:.2f}")
+    else:
+        logger.warning("No valid data found, using default y-axis range")
+        y_min = None
+        y_max = None
+
+    # Clean up temporary plotters
+    temp_plotter_ssp245.close()
+    temp_plotter_ssp585.close()
+
+    # Now create the actual plots with consistent y-axis limits
+    for experiment in ['ssp245', 'ssp585']:
+        plotter = ExtremeStatisticsPlotter(
+            variable=variable,
+            experiment=experiment,
+            month=month,
+            input_dir=input_dir,
+            output_dir=output_dir,
+            metric=metric,
+            color_scheme=color_scheme,
+            dpi=dpi,
+            figsize=figsize
+        )
+
+        # Generate plot with consistent y-axis limits
+        plotter.load_data(data_type='extremes')
+        fig = plotter.plot_metric_time_series(y_min=y_min, y_max=y_max)
+
+        # Extract metric metadata if available
+        if metric in plotter.data:
+            metric_name = plotter.data[metric].attrs.get('long_name', metric)
+        else:
+            metric_name = metric
+
+        # Export figure
+        filename = f"{variable}_{experiment}_month{month:02d}_{metric}_consistent_range"
+        metadata = {
+            "Variable": variable,
+            "Experiment": experiment,
+            "Month": str(month),
+            "Metric": metric_name,
+            "Type": "Time Series (Consistent Range)"
+        }
+
+        export_figure(
+            fig=fig,
+            output_dir=output_dir,
+            filename=filename,
+            formats=formats,
+            dpi=dpi,
+            metadata=metadata
+        )
+
+        # Close figure
+        plotter.close()
+
+    logger.info(f"Paired time series plots with consistent y-axis saved to {output_dir}")
+
 
 def main():
     """Main execution function."""
@@ -47,18 +284,33 @@ def main():
 
     # Define required arguments
     parser.add_argument("--variable", type=str, choices=["temperature", "precipitation"],
-                        help="Climate variable to analyze")
+                        help="Base climate variable to analyze")
     parser.add_argument("--experiment", type=str, choices=["ssp245", "ssp585"],
                         help="Experiment to analyze")
-    parser.add_argument("--month", type=int, choices=range(1, 13),
-                        help="Month to analyze (1-12)")
 
-    # Plot type selection
-    parser.add_argument("--plot-type", type=str,
-                        choices=["anomaly", "heatwave", "heatmap", "location", "all"],
-                        help="Type of plot to generate")
-    parser.add_argument("--all-plots", action="store_true",
-                        help="Generate all plot types")
+    # Visualization type selection
+    parser.add_argument("--viz-type", type=str, required=True,
+                        choices=["anomaly", "timeseries", "heatmap", "location"],
+                        help="Type of visualization to generate")
+
+    # Month specification
+    parser.add_argument("--month", type=int, choices=range(1, 13),
+                        help="Month to analyze for timeseries and anomaly (1-12)")
+
+    parser.add_argument("--months", type=str,
+                        help="Months to analyze for heatmap (comma-separated, range with dash, or 'all')")
+
+    # Metric selection
+    parser.add_argument("--metric", type=str, choices=AVAILABLE_METRICS,
+                        help="Specific metric to visualize")
+
+    # Color scheme
+    parser.add_argument("--color-scheme", type=str, choices=COLOR_SCHEMES,
+                        help="Color scheme to use (overrides default based on metric)")
+
+    # Consistent y-axis range for paired metrics
+    parser.add_argument("--consistent-range", action="store_true",
+                        help="Generate plots for both SSP245 and SSP585 with consistent y-axis range")
 
     # Define optional arguments
     parser.add_argument("--input-dir", type=str,
@@ -74,18 +326,31 @@ def main():
 
     args = parser.parse_args()
 
-    # Validate arguments
-    if args.all_plots:
-        if not args.variable or not args.experiment:
-            parser.error("--all-plots requires --variable and --experiment")
-        # Set plot_type to "all"
-        args.plot_type = "all"
-    elif args.plot_type is None:
-        parser.error("Either --all-plots or --plot-type must be specified")
+    # Validate arguments based on visualization type
+    if args.viz_type == 'anomaly':
+        if not args.variable or not args.experiment or not args.month:
+            parser.error("--viz-type anomaly requires --variable, --experiment, and --month")
 
-    # Month is not needed for heatmap plot
-    if args.plot_type not in ["heatmap", "all"] and args.month is None:
-        parser.error("--month is required for plot types other than 'heatmap'")
+    elif args.viz_type == 'timeseries':
+        if args.consistent_range:
+            # When using consistent range, experiment should not be specified
+            if not args.variable or not args.month or not args.metric:
+                parser.error("--viz-type timeseries with --consistent-range requires --variable, --month, and --metric")
+            if args.experiment:
+                parser.error(
+                    "--experiment should not be specified when using --consistent-range (plots for both scenarios will be generated)")
+        else:
+            # Original validation for single scenario plotting
+            if not args.variable or not args.experiment or not args.month or not args.metric:
+                parser.error("--viz-type timeseries requires --variable, --experiment, --month, and --metric")
+
+    elif args.viz_type == 'heatmap':
+        if not args.variable or not args.experiment or not args.metric:
+            parser.error("--viz-type heatmap requires --variable, --experiment, and --metric")
+
+    elif args.viz_type == 'location':
+        if not args.variable or not args.experiment or not args.month:
+            parser.error("--viz-type location requires --variable, --experiment, and --month")
 
     # Determine project root directory
     project_dir = Path(__file__).resolve().parents[1]
@@ -107,63 +372,86 @@ def main():
     # Parse output formats
     formats = args.formats.split(',')
 
-    logger.info(f"Generating {args.plot_type} plot for {args.variable}, {args.experiment}")
+    logger.info(f"Generating {args.viz_type} plot for {args.variable}, {args.experiment}")
 
-    # Generate requested plots
-    if args.plot_type in ["anomaly", "all"]:
-        if args.month is not None:
-            generate_anomaly_plot(
+    # Generate requested visualization
+    if args.viz_type == "anomaly":
+        generate_anomaly_plot(
+            variable=args.variable,
+            experiment=args.experiment,
+            month=args.month,
+            input_dir=input_dir,
+            output_dir=output_dir,
+            formats=formats,
+            dpi=args.dpi,
+            figsize=figsize
+        )
+
+    # Generate time series plot
+    elif args.viz_type == "timeseries":
+        if args.consistent_range:
+            # Generate paired plots with consistent y-axis range
+            generate_paired_metric_timeseries(
                 variable=args.variable,
-                experiment=args.experiment,
+                metric=args.metric,
                 month=args.month,
                 input_dir=input_dir,
                 output_dir=output_dir,
+                color_scheme=args.color_scheme,
                 formats=formats,
                 dpi=args.dpi,
                 figsize=figsize
             )
-
-    if args.plot_type in ["heatwave", "all"]:
-        if args.variable == "temperature" and args.month is not None:
-            generate_heatwave_plot(
+        else:
+            # Generate single plot (unchanged)
+            generate_metric_timeseries(
                 variable=args.variable,
                 experiment=args.experiment,
                 month=args.month,
+                metric=args.metric,
                 input_dir=input_dir,
                 output_dir=output_dir,
+                color_scheme=args.color_scheme,
                 formats=formats,
                 dpi=args.dpi,
                 figsize=figsize
             )
-        elif args.plot_type == "heatwave":
-            logger.warning("Heatwave plots are only available for temperature variable")
 
-    if args.plot_type in ["heatmap", "all"]:
-        if args.variable == "temperature":
-            generate_heatmap_plot(
-                variable=args.variable,
-                experiment=args.experiment,
-                input_dir=input_dir,
-                output_dir=output_dir,
-                formats=formats,
-                dpi=args.dpi,
-                figsize=figsize
-            )
-        elif args.plot_type == "heatmap":
-            logger.warning("Heatmap plots are only available for temperature variable")
+    elif args.viz_type == "heatmap":
+        # Parse months argument for heatmap
+        if args.months:
+            try:
+                months = parse_months_argument(args.months)
+            except ValueError as e:
+                logger.error(str(e))
+                return
+        else:
+            months = list(range(1, 13))  # Default to all months
 
-    if args.plot_type in ["location", "all"]:
-        if args.month is not None:
-            generate_location_plot(
-                variable=args.variable,
-                experiment=args.experiment,
-                month=args.month,
-                input_dir=input_dir,
-                output_dir=output_dir,
-                formats=formats,
-                dpi=args.dpi,
-                figsize=figsize
-            )
+        generate_metric_heatmap(
+            variable=args.variable,
+            experiment=args.experiment,
+            metric=args.metric,
+            months=months,
+            input_dir=input_dir,
+            output_dir=output_dir,
+            color_scheme=args.color_scheme,
+            formats=formats,
+            dpi=args.dpi,
+            figsize=figsize
+        )
+
+    elif args.viz_type == "location":
+        generate_location_plot(
+            variable=args.variable,
+            experiment=args.experiment,
+            month=args.month,
+            input_dir=input_dir,
+            output_dir=output_dir,
+            formats=formats,
+            dpi=args.dpi,
+            figsize=figsize
+        )
 
     logger.info("Plot generation completed")
 
@@ -210,9 +498,10 @@ def generate_anomaly_plot(variable, experiment, month, input_dir, output_dir, fo
     logger.info(f"Anomaly plot saved to {output_dir}/{filename}")
 
 
-def generate_heatwave_plot(variable, experiment, month, input_dir, output_dir, formats, dpi, figsize):
-    """Generate heat wave metrics plot."""
-    logger.info(f"Generating heat wave plot for {variable}, {experiment}, month {month}")
+def generate_metric_timeseries(variable, experiment, month, metric, input_dir, output_dir,
+                               color_scheme=None, formats=None, dpi=300, figsize=(12, 10)):
+    """Generate time series plot for a specific metric."""
+    logger.info(f"Generating time series plot for {metric}, {experiment}, month {month}")
 
     # Create plotter
     plotter = ExtremeStatisticsPlotter(
@@ -221,20 +510,31 @@ def generate_heatwave_plot(variable, experiment, month, input_dir, output_dir, f
         month=month,
         input_dir=input_dir,
         output_dir=output_dir,
+        metric=metric,
+        color_scheme=color_scheme,
         dpi=dpi,
         figsize=figsize
     )
 
     # Generate plot
-    fig = plotter.plot_heat_wave_metrics()
+    fig = plotter.plot_metric_time_series()
 
     # Export figure
-    filename = f"{variable}_{experiment}_month{month:02d}_heat_wave_metrics"
+    filename = f"{variable}_{experiment}_month{month:02d}_{metric}_timeseries"
+
+    # Extract metric metadata if available
+    plotter.load_data(data_type='extremes')
+    if metric in plotter.data:
+        metric_name = plotter.data[metric].attrs.get('long_name', metric)
+    else:
+        metric_name = metric
+
     metadata = {
         "Variable": variable,
         "Experiment": experiment,
         "Month": str(month),
-        "Type": "Heat Wave Metrics"
+        "Metric": metric_name,
+        "Type": "Time Series"
     }
 
     export_figure(
@@ -249,33 +549,47 @@ def generate_heatwave_plot(variable, experiment, month, input_dir, output_dir, f
     # Close figure
     plotter.close()
 
-    logger.info(f"Heat wave plot saved to {output_dir}/{filename}")
+    logger.info(f"Time series plot saved to {output_dir}/{filename}")
 
 
-def generate_heatmap_plot(variable, experiment, input_dir, output_dir, formats, dpi, figsize):
-    """Generate monthly heat wave heatmap."""
-    logger.info(f"Generating monthly heat wave heatmap for {variable}, {experiment}")
+def generate_metric_heatmap(variable, experiment, metric, months, input_dir, output_dir,
+                            color_scheme=None, formats=None, dpi=300, figsize=(14, 8)):
+    """Generate heatmap for a specific metric across multiple months."""
+    logger.info(f"Generating heatmap for {metric}, {experiment}, months {months}")
 
-    # Create plotter
+    # Create plotter with first month (will be updated for each month)
     plotter = ExtremeStatisticsPlotter(
         variable=variable,
         experiment=experiment,
-        month=1,  # Doesn't matter for heatmap
+        month=months[0],  # Temporary, will load data for all months
         input_dir=input_dir,
         output_dir=output_dir,
+        metric=metric,
+        color_scheme=color_scheme,
         dpi=dpi,
         figsize=figsize
     )
 
     # Generate plot
-    fig = plotter.create_monthly_heatmap()
+    fig = plotter.create_metric_heatmap(months=months)
 
     # Export figure
-    filename = f"{variable}_{experiment}_heat_wave_monthly_heatmap"
+    month_str = "all" if len(months) == 12 else f"months{'_'.join([str(m) for m in months])}"
+    filename = f"{variable}_{experiment}_{metric}_{month_str}_heatmap"
+
+    # Extract metric metadata if available
+    plotter.load_data(data_type='extremes')
+    if metric in plotter.data:
+        metric_name = plotter.data[metric].attrs.get('long_name', metric)
+    else:
+        metric_name = metric
+
     metadata = {
         "Variable": variable,
         "Experiment": experiment,
-        "Type": "Heat Wave Monthly Heatmap"
+        "Months": ",".join(str(m) for m in months),
+        "Metric": metric_name,
+        "Type": "Heatmap"
     }
 
     export_figure(
@@ -290,7 +604,7 @@ def generate_heatmap_plot(variable, experiment, input_dir, output_dir, formats, 
     # Close figure
     plotter.close()
 
-    logger.info(f"Monthly heatmap saved to {output_dir}/{filename}")
+    logger.info(f"Heatmap saved to {output_dir}/{filename}")
 
 
 def generate_location_plot(variable, experiment, month, input_dir, output_dir, formats, dpi, figsize):

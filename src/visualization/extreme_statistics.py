@@ -5,11 +5,11 @@ This module provides functions to analyze climate extreme events and create visu
 """
 
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, List
+import calendar
 
 import matplotlib.pyplot as plt
 import numpy as np
-import xarray as xr
 import pymannkendall as mk
 
 from .plotter import BasePlotter
@@ -27,83 +27,141 @@ class ExtremeStatisticsPlotter(BasePlotter):
         """Initialize with parent class constructor."""
         super().__init__(*args, **kwargs)
 
-        # Additional attributes for heat wave analysis
+        # Additional attributes for trend analysis
         self.mk_results = {}
         self.trend_statistics = {}
 
-    def load_data(self, data_type: str = 'extremes') -> None:
+    def load_data(self, data_type: str = 'extremes', months: List[int] = None) -> None:
         """
         Load extreme events data from NetCDF file.
 
         Args:
             data_type: Type of data to load (defaults to 'extremes')
+            months: List of months to load (for multi-month analysis)
         """
-        super().load_data(data_type=data_type)
+        super().load_data(data_type=data_type, months=months)
 
-    def calculate_statistics(self) -> Dict[str, Any]:
+    def calculate_statistics(self, metric: str = None) -> Dict[str, Any]:
         """
-        Calculate trend statistics for extreme event metrics.
+        Calculate trend statistics for specified metric.
+
+        Args:
+            metric: Specific metric to analyze (if None, uses self.metric)
 
         Returns:
             Dictionary with Mann-Kendall test results
         """
+        # Use provided metric or default to instance metric
+        metric = metric or self.metric
+
+        if not metric:
+            raise ValueError("No metric specified for trend calculation")
+
         if not self.is_data_loaded:
             logger.info("Data not loaded. Loading extremes data...")
             self.load_data(data_type='extremes')
 
-        logger.info("Calculating trend statistics for extreme event metrics")
+        logger.info(f"Calculating trend statistics for {metric}")
 
-        metrics = []
-        # Check which metrics are available in the dataset
-        if 'frequency' in self.data:
-            metrics.append('frequency')
-        if 'persistence' in self.data:
-            metrics.append('persistence')
-        if 'intensity' in self.data:
-            metrics.append('intensity')
+        # Get years data
+        years = self.data.year.values
 
-        # Heat wave specific metrics
-        if 'hw_count' in self.data:
-            metrics.append('hw_count')
-        if 'hw_days' in self.data:
-            metrics.append('hw_days')
-        if 'hw_max_duration' in self.data:
-            metrics.append('hw_max_duration')
-        if 'hw_mean_duration' in self.data:
-            metrics.append('hw_mean_duration')
-
-        # Calculate Mann-Kendall and Sen's Slope for each metric
-        for metric in metrics:
+        # Extract data values for metric
+        if metric in self.data:
             data_values = self.data[metric].values
+        else:
+            raise ValueError(f"Metric '{metric}' not found in loaded data")
 
-            # Skip if all NaN
-            if np.all(np.isnan(data_values)):
-                logger.warning(f"All NaN values for {metric}, skipping")
-                continue
+        # Handle timedelta data type if present
+        try:
+            # If it's a timedelta, convert to float (days)
+            if hasattr(data_values, 'dtype') and np.issubdtype(data_values.dtype, np.timedelta64):
+                data_values = data_values.astype('timedelta64[D]').astype(float)
+        except (TypeError, ValueError):
+            # If conversion fails, just proceed with original values
+            pass
 
-            # Remove NaN values for Mann-Kendall
-            valid_idx = ~np.isnan(data_values)
-            valid_data = data_values[valid_idx]
+        # Skip if all NaN
+        if np.all(np.isnan(data_values)):
+            logger.warning(f"All NaN values for {metric}, skipping")
+            return {}
 
-            if len(valid_data) < 10:
-                logger.warning(f"Not enough valid data points for {metric}, skipping")
-                continue
+        # Remove NaN values for Mann-Kendall
+        valid_idx = ~np.isnan(data_values)
+        valid_data = data_values[valid_idx]
+        valid_years = years[valid_idx]
 
-            # Run Mann-Kendall test
-            try:
-                mk_result = mk.original_test(valid_data)
+        # Ensure numeric data
+        try:
+            valid_data = valid_data.astype(float)
+        except (ValueError, TypeError):
+            logger.warning(f"Cannot convert {metric} data to numeric, skipping")
+            return {}
+
+        if len(valid_data) < 10:
+            logger.warning(f"Not enough valid data points for {metric}, skipping")
+            return {}
+
+        # Run Mann-Kendall test
+        try:
+            # Use original values for Mann-Kendall test
+            mk_result = mk.original_test(valid_data)
+
+            # Determine if this is a duration metric
+            is_duration_metric = 'duration' in metric or metric in ['persistence', 'cdd', 'cwd']
+
+            if is_duration_metric:
+                # For duration metrics, calculate slope manually
+                num_valid = len(valid_data)
+                slopes = []
+                for i in range(num_valid):
+                    for j in range(i + 1, num_valid):
+                        # Calculate slope as change in days per year
+                        time_diff = valid_years[j] - valid_years[i]
+                        if time_diff != 0:  # Avoid division by zero
+                            slope = (valid_data[j] - valid_data[i]) / time_diff
+                            slopes.append(slope)
+
+                # Use median of slopes (Sen's slope estimator)
+                corrected_slope = np.median(slopes) if slopes else 0.0
 
                 # Store results
                 self.mk_results[metric] = {
                     'trend': mk_result.trend,
-                    'h': mk_result.h,  # True if trend is significant
-                    'p': mk_result.p,  # p-value
-                    'z': mk_result.z,  # test statistic
-                    'tau': mk_result.Tau,  # Kendall's Tau
-                    's': mk_result.s,  # Mann-Kendall's S statistic
-                    'var_s': mk_result.var_s,  # Variance of S
-                    'slope': mk_result.slope,  # Sen's slope
-                    'intercept': mk_result.intercept  # Sen's intercept
+                    'h': mk_result.h,
+                    'p': mk_result.p,
+                    'z': mk_result.z,
+                    'tau': mk_result.Tau,
+                    's': mk_result.s,
+                    'var_s': mk_result.var_s,
+                    'slope': corrected_slope,
+                    'intercept': 0  # Not used for plotting
+                }
+
+                # Format for display
+                self.trend_statistics[metric] = {
+                    'tau': f"{mk_result.Tau:.3f}",
+                    'p_value': (f"{mk_result.p:.3f}" if mk_result.p >= 0.001
+                                else f"{mk_result.p:.2e}"),
+                    'slope': f"{corrected_slope:.5f}",
+                    'significant': mk_result.h,
+                    'trend_text': mk_result.trend
+                }
+
+                logger.info(f"Mann-Kendall for {metric}: {mk_result.trend}, p={mk_result.p:.4f}, "
+                            f"corrected_slope={corrected_slope:.5f} days/year")
+            else:
+                # For non-duration metrics, use original calculation
+                self.mk_results[metric] = {
+                    'trend': mk_result.trend,
+                    'h': mk_result.h,
+                    'p': mk_result.p,
+                    'z': mk_result.z,
+                    'tau': mk_result.Tau,
+                    's': mk_result.s,
+                    'var_s': mk_result.var_s,
+                    'slope': mk_result.slope,
+                    'intercept': mk_result.intercept
                 }
 
                 # Format for display
@@ -119,168 +177,180 @@ class ExtremeStatisticsPlotter(BasePlotter):
                 logger.info(f"Mann-Kendall for {metric}: {mk_result.trend}, "
                             f"p={mk_result.p:.4f}, slope={mk_result.slope:.5f}")
 
-            except Exception as e:
-                logger.error(f"Error calculating Mann-Kendall for {metric}: {e}")
+        except Exception as e:
+            logger.error(f"Error calculating Mann-Kendall for {metric}: {e}")
 
         return self.trend_statistics
 
-    def plot_heat_wave_metrics(self) -> plt.Figure:
+    def plot_metric_time_series(self, metric: str = None, y_min: float = None, y_max: float = None) -> plt.Figure:
         """
-        Create a plot showing heat wave frequency and duration metrics.
+        Create a time series plot for any climate metric.
+
+        Args:
+            metric: Specific metric to plot (if None, uses self.metric)
+            y_min: Optional minimum value for y-axis
+            y_max: Optional maximum value for y-axis
 
         Returns:
             Matplotlib figure object
         """
+        # Use provided metric or default to instance metric
+        metric = metric or self.metric
+
+        if not metric:
+            raise ValueError("No metric specified for plotting")
+
         if not self.is_data_loaded:
             logger.info("Data not loaded. Loading extremes data...")
             self.load_data(data_type='extremes')
 
         # Calculate statistics if not already done
-        if not self.trend_statistics:
-            self.calculate_statistics()
+        if not self.trend_statistics or metric not in self.trend_statistics:
+            self.calculate_statistics(metric=metric)
 
-        logger.info("Creating heat wave metrics plot")
+        logger.info(f"Creating time series plot for {metric}")
 
-        # Setup 2-panel figure
-        self.setup_figure(nrows=2, ncols=1, figsize=(12, 10))
+        # Setup figure
+        self.setup_figure(figsize=(12, 8))
 
         # Extract data
         years = self.data.year.values
+        metric_data = self.data[metric].values
 
-        # Plot heat wave count in top panel
-        ax_top = self.axes[0]
-        hw_count = self.data.hw_count.values
+        # Get metric metadata
+        metric_long_name = self.data[metric].attrs.get('long_name', metric)
+        metric_units = self.data[metric].attrs.get('units', '')
 
-        # Get colors for this variable
-        colors = self.color_mappings[self.variable]
+        # Get color based on metric category
+        category = self.get_metric_category(metric)
+        color = self.color_mappings[category][self.experiment]
 
-        # Plot heat wave count
-        ax_top.plot(years, hw_count, marker='o', markersize=4,
-                    color=colors[self.experiment], linewidth=1.5)
+        # Handle timedelta data type if present
+        try:
+            # If it's a timedelta, convert to float (days)
+            if hasattr(metric_data, 'dtype') and np.issubdtype(metric_data.dtype, np.timedelta64):
+                metric_data = metric_data.astype('timedelta64[D]').astype(float)
+        except (TypeError, ValueError):
+            # If conversion fails, just proceed with original values
+            pass
 
-        # Add trend line if available
-        if 'hw_count' in self.mk_results:
-            mk_res = self.mk_results['hw_count']
-            x = np.array(years)
-            y = mk_res['slope'] * x + mk_res['intercept']
-            ax_top.plot(x, y, color='black', linestyle='--',
-                        linewidth=2, label='Trend')
+        # Plot the data points
+        ax = self.axes[0]
+        ax.plot(years, metric_data, marker='o', markersize=7,
+                color=color, linewidth=1.5,
+                markerfacecolor=color, markeredgecolor='white',
+                markeredgewidth=0.5, zorder=5)
+
+        # Add trend line using simple linear regression
+        valid_idx = ~np.isnan(metric_data)
+        if np.sum(valid_idx) > 2:  # Need at least 3 points for a trend
+            valid_years = years[valid_idx].astype(float)  # Ensure years are floats
+            valid_values = metric_data[valid_idx].astype(float)  # Ensure values are floats
+
+            # Simple linear regression
+            slope, intercept = np.polyfit(valid_years, valid_values, 1)
+
+            # Plot trend line
+            trend_years = np.array([years[0], years[-1]]).astype(float)
+            trend_values = slope * trend_years + intercept
+            ax.plot(trend_years, trend_values, color='black', linestyle='--',
+                    linewidth=2, label='Trend', zorder=4)
+
+            # Explicitly add legend
+            ax.legend(loc='upper right', framealpha=0.9, edgecolor='gray', fontsize=12,
+                      bbox_to_anchor=(0.98, 0.98), borderpad=0.5)
 
         # Add statistics text box if available
-        if 'hw_count' in self.trend_statistics:
-            stats = self.trend_statistics['hw_count']
+        if metric in self.trend_statistics:
+            stats = self.trend_statistics[metric]
             stats_text = (f"Mann-Kendall Statistics:\n"
                           f"Kendall's τ: {stats['tau']}\n"
-                          f"Slope: {stats['slope']} events/year\n"
+                          f"Slope: {stats['slope']} {metric_units}/year\n"
                           f"p-value: {stats['p_value']}\n"
                           f"Trend: {stats['trend_text']}")
 
             # Place text box in top left with background
-            ax_top.text(0.03, 0.97, stats_text, transform=ax_top.transAxes,
-                        fontsize=10, verticalalignment='top', horizontalalignment='left',
-                        bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+            ax.text(0.03, 0.97, stats_text, transform=ax.transAxes,
+                    fontsize=12, verticalalignment='top', horizontalalignment='left',
+                    bbox=dict(boxstyle='round', facecolor='white', alpha=1.0, pad=0.5),
+                    zorder=100)
+
+        # Set y-axis limits if provided
+        if y_min is not None and y_max is not None:
+            ax.set_ylim(y_min, y_max)
 
         # Add labels and title
-        ax_top.set_ylabel('Heat Wave Events (per month)', fontsize=12)
-        ax_top.set_title(f'Heat Wave Frequency', fontsize=14)
+        ax.set_xlabel('Year', fontsize=12)
+        ax.set_ylabel(f"{metric_long_name} ({metric_units})", fontsize=12)
 
-        # Plot maximum heat wave duration in bottom panel
-        ax_bottom = self.axes[1]
-        hw_max_duration = self.data.hw_max_duration.values
-
-        # Plot heat wave maximum duration
-        ax_bottom.plot(years, hw_max_duration, marker='o', markersize=4,
-                       color=colors[self.experiment], linewidth=1.5)
-
-        # Add trend line if available
-        if 'hw_max_duration' in self.mk_results:
-            mk_res = self.mk_results['hw_max_duration']
-            x = np.array(years)
-            y = mk_res['slope'] * x + mk_res['intercept']
-            ax_bottom.plot(x, y, color='black', linestyle='--',
-                           linewidth=2, label='Trend')
-
-        # Add statistics text box if available
-        if 'hw_max_duration' in self.trend_statistics:
-            stats = self.trend_statistics['hw_max_duration']
-            stats_text = (f"Mann-Kendall Statistics:\n"
-                          f"Kendall's τ: {stats['tau']}\n"
-                          f"Slope: {stats['slope']} days/year\n"
-                          f"p-value: {stats['p_value']}\n"
-                          f"Trend: {stats['trend_text']}")
-
-            # Place text box in top left with background
-            ax_bottom.text(0.03, 0.97, stats_text, transform=ax_bottom.transAxes,
-                           fontsize=10, verticalalignment='top', horizontalalignment='left',
-                           bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-
-        # Add labels
-        ax_bottom.set_xlabel('Year', fontsize=12)
-        ax_bottom.set_ylabel('Maximum Duration (days)', fontsize=12)
-        ax_bottom.set_title(f'Heat Wave Maximum Duration', fontsize=14)
-
-        # Add threshold information from global attributes
-        threshold_value = self.data.attrs.get('threshold_value', 'N/A')
-        threshold_percentile = self.data.attrs.get('threshold_percentile', 'N/A')
-        min_duration = self.data.attrs.get('heat_wave_min_duration', 'N/A')
-
-        # Add threshold info text at the bottom
-        threshold_text = (f"Heat wave definition: ≥{min_duration} consecutive days exceeding "
-                          f"the {threshold_percentile}th percentile ({threshold_value:.2f} K)")
-
-        self.fig.text(0.5, 0.01, threshold_text, ha='center', fontsize=10)
+        # Format y-axis based on units
+        if 'days' in metric_units.lower() or metric_units.lower() == 'days':
+            ax.yaxis.set_major_locator(plt.MaxNLocator(integer=True))
 
         # Add overall title
-        title = f"Heat Wave Metrics - {self.experiment.upper()}"
+        title = f"{metric_long_name} - {self.experiment.upper()}"
         subtitle = f"Month: {self._get_month_name(self.month)}, Location: {self.latitude:.2f}°, {self.longitude:.2f}°"
         self.add_title(title, subtitle)
 
-        # Adjust layout
-        self.fig.tight_layout(rect=[0, 0.02, 1, 0.95])
+        # Add description at the bottom
+        metadata_text = (f"Variable: {self.variable}, Experiment: {self.experiment}, "
+                         f"Month: {self.month}, Metric: {metric}, Type: Time Series")
+        self.fig.text(0.5, 0.04, metadata_text, ha='center', fontsize=10, style='italic')
+
+        # Adjust layout to accommodate text at bottom
+        self.fig.tight_layout(rect=[0, 0.05, 1, 0.95])  # Increase bottom margin
 
         return self.fig
 
-    def create_monthly_heatmap(self, all_months_data: Dict[int, xr.Dataset] = None) -> plt.Figure:
+    def create_metric_heatmap(self, metric: str = None, months: List[int] = None) -> plt.Figure:
         """
-        Create a heatmap of heat wave days by month and year.
+        Create a heatmap of a metric by month and year.
 
         Args:
-            all_months_data: Dictionary of datasets for all months (if provided)
-                             Keys are month numbers, values are xarray Datasets
+            metric: Specific metric to visualize (if None, uses self.metric)
+            months: List of months to include (if None, uses all months)
 
         Returns:
             Matplotlib figure object
         """
-        logger.info("Creating monthly heat wave heatmap")
+        # Use provided metric or default to instance metric
+        metric = metric or self.metric
+
+        if not metric:
+            raise ValueError("No metric specified for heatmap")
+
+        # If months is None, use all months
+        if months is None:
+            months = list(range(1, 13))
+
+        logger.info(f"Creating monthly heatmap for {metric} across months {months}")
 
         # Load all months data if not provided
-        if all_months_data is None:
-            logger.info("Loading data for all months")
-            all_months_data = {}
+        all_months_data = {}
 
-            # Backup current month
-            original_month = self.month
+        # Backup current month
+        original_month = self.month
 
-            for month in range(1, 13):
-                try:
-                    # Temporarily set month
-                    self.month = month
+        for month in months:
+            try:
+                # Temporarily set month
+                self.month = month
 
-                    # Load data for this month
-                    self.load_data(data_type='extremes')
+                # Load data for this month
+                self.load_data(data_type='extremes')
 
-                    # Store data
-                    all_months_data[month] = self.data
+                # Store data
+                all_months_data[month] = self.data
 
-                    # Reset data loaded flag for next iteration
-                    self.is_data_loaded = False
+                # Reset data loaded flag for next iteration
+                self.is_data_loaded = False
 
-                    logger.info(f"Loaded data for month {month}")
-                except FileNotFoundError:
-                    logger.warning(f"No data found for month {month}")
-                finally:
-                    # Restore original month
-                    self.month = original_month
+                logger.info(f"Loaded data for month {month}")
+            except FileNotFoundError:
+                logger.warning(f"No data found for month {month}")
+            finally:
+                # Restore original month
+                self.month = original_month
 
         # Check if we have data
         if not all_months_data:
@@ -295,22 +365,42 @@ class ExtremeStatisticsPlotter(BasePlotter):
         # Create empty data array for heatmap
         heatmap_data = np.full((len(months), len(years)), np.nan)
 
-        # Fill with heat wave days
+        # Fill with metric data
         for i, month in enumerate(months):
             if month in all_months_data:
                 ds = all_months_data[month]
-                # Use hw_days for heat wave days if available, otherwise use frequency
-                if 'hw_days' in ds:
-                    heatmap_data[i, :] = ds.hw_days.values
-                elif 'frequency' in ds:
-                    heatmap_data[i, :] = ds.frequency.values
+                if metric in ds:
+                    # Extract metric data
+                    metric_data = ds[metric].values
+
+                    # Handle timedelta data type if present
+                    try:
+                        # If it's a timedelta, convert to float (days)
+                        if hasattr(metric_data, 'dtype') and np.issubdtype(metric_data.dtype, np.timedelta64):
+                            metric_data = metric_data.astype('timedelta64[D]').astype(float)
+                    except (TypeError, ValueError):
+                        # If conversion fails, just proceed with original values
+                        pass
+
+                    heatmap_data[i, :] = metric_data
+                else:
+                    logger.warning(f"Metric {metric} not found in data for month {month}")
 
         # Create figure
         self.setup_figure(figsize=(14, 8))
         ax = self.axes[0]
 
+        # Get metric metadata from first available dataset
+        sample_ds = all_months_data[first_month]
+        if metric in sample_ds:
+            metric_long_name = sample_ds[metric].attrs.get('long_name', metric)
+            metric_units = sample_ds[metric].attrs.get('units', '')
+        else:
+            metric_long_name = metric
+            metric_units = ''
+
         # Create heatmap
-        cmap = 'YlOrRd'  # Yellow-Orange-Red colormap, good for heat waves
+        cmap = self.get_colormap_for_heatmap()
         im = ax.imshow(heatmap_data, aspect='auto', cmap=cmap,
                        interpolation='nearest', origin='lower')
 
@@ -321,8 +411,7 @@ class ExtremeStatisticsPlotter(BasePlotter):
         ax.set_xticklabels([str(years[i]) for i in x_tick_indices], rotation=45)
 
         # Month names on y-axis
-        month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-                       'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+        month_names = [calendar.month_abbr[m] for m in range(1, 13)]
 
         # Use only available months for y labels
         y_tick_indices = np.arange(len(months))
@@ -331,54 +420,42 @@ class ExtremeStatisticsPlotter(BasePlotter):
 
         # Add colorbar
         cbar = self.fig.colorbar(im, ax=ax)
-        cbar.set_label('Heat Wave Days per Month')
+        cbar.set_label(f'{metric_long_name} ({metric_units})')
 
         # Add annotations for significant trends
         for i, month in enumerate(months):
             if month in all_months_data:
                 ds = all_months_data[month]
 
-                # Temporarily set month for Mann-Kendall calculation
-                original_month = self.month
-                self.month = month
-                self.data = ds
-                self.calculate_statistics()
+                if metric in ds:
+                    # Temporarily set month and data for Mann-Kendall calculation
+                    original_month = self.month
+                    self.month = month
+                    self.data = ds
+                    stats = self.calculate_statistics(metric)
 
-                # Check if hw_days has significant trend
-                metric = 'hw_days' if 'hw_days' in self.trend_statistics else 'frequency'
-                if metric in self.trend_statistics and self.trend_statistics[metric]['significant']:
-                    # Add a marker at the bottom of the heatmap cell
-                    x_center = len(years) - 1  # Last year
-                    y_center = i
-                    ax.text(x_center, y_center, '*', color='black',
-                            fontsize=14, ha='center', va='center')
+                    # Check if metric has significant trend
+                    if metric in stats and stats[metric]['significant']:
+                        # Add a marker at the bottom of the heatmap cell
+                        x_center = len(years) - 1  # Last year
+                        y_center = i
+                        ax.text(x_center, y_center, '*', color='black',
+                                fontsize=14, ha='center', va='center')
 
-                # Reset month
-                self.month = original_month
+                    # Reset month
+                    self.month = original_month
 
-        # Get threshold information from any of the datasets
-        sample_ds = next(iter(all_months_data.values()))
-        threshold_value = sample_ds.attrs.get('threshold_value', 'N/A')
-        threshold_percentile = sample_ds.attrs.get('threshold_percentile', 'N/A')
-        min_duration = sample_ds.attrs.get('heat_wave_min_duration', 'N/A')
-
-        # Add title and threshold information
-        title = f"Heat Wave Days by Month - {self.experiment.upper()}"
+        # Add title
+        title = f"{metric_long_name} by Month - {self.experiment.upper()}"
         subtitle = f"Location: {self.latitude:.2f}°, {self.longitude:.2f}°"
         self.add_title(title, subtitle)
-
-        threshold_text = (f"Heat wave definition: ≥{min_duration} consecutive days exceeding "
-                          f"the {threshold_percentile}th percentile ({threshold_value:.2f} K)")
-        self.fig.text(0.5, 0.01, threshold_text, ha='center', fontsize=10)
 
         # Add asterisk explanation
         asterisk_text = "* Significant trend (p<0.05, Mann-Kendall test)"
         self.fig.text(0.98, 0.02, asterisk_text, ha='right', fontsize=9,
                       style='italic')
 
-        # Adjust layout - fix for colorbar compatibility
-        # self.fig.tight_layout()
-        # Adjust the padding manually
-        plt.subplots_adjust(top=0.90, bottom=0.05)
+        # Adjust layout
+        plt.subplots_adjust(top=0.90, bottom=0.1)
 
         return self.fig

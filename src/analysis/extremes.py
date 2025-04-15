@@ -1010,7 +1010,7 @@ class ExtremesAnalyzer(BaseAnalyzer):
         """
         if filename is None:
             # Create default filename if not provided
-            filename = f"extremes_{self.experiment}_month{self.month}.nc"
+            filename = f"extremes_{self.experiment}_month{self.month:02d}.nc"
 
         # Use parent class method to save the file
         output_file = super().save_results(results, filename=filename)
