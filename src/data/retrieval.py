@@ -3,7 +3,15 @@ CMIP6 Data Retrieval Module
 
 This module provides functions to retrieve CMIP6 climate data from the Climate Data Store (CDS)
 API for specific point locations. It supports downloading both historical and projection data
-for temperature and precipitation variables.
+for temperature and precipitation variables across multiple CMIP6 models.
+
+The models available in this module have been carefully selected to ensure they provide:
+1. Historical data (1995-2014)
+2. SSP2-4.5 projections (2015-2100)
+3. SSP5-8.5 projections (2015-2100)
+
+Only models that provide all three of these datasets through the Climate Data Store (CDS)
+are included to ensure consistent analysis across different climate scenarios.
 
 Functions:
     create_cds_client(): Create and return a CDS API client
@@ -26,15 +34,49 @@ logger = logging.getLogger(__name__)
 
 # Constants
 DATASET = "projections-cmip6"
+
+# Available CMIP6 models through the Climate Data Store (CDS)
+# These models provide both historical data (1995-2014) and
+# future projections for both SSP2-4.5 and SSP5-8.5 (2015-2100)
+MODELS = {
+    "access_cm2": "ACCESS-CM2 (Australia)",
+    "awi_cm_1_1_mr": "AWI-CM-1-1-MR (Germany)",
+    "bcc_csm2_mr": "BCC-CSM2-MR (China)",
+    "cesm2": "CESM2 (USA)",
+    "cmcc_cm2_sr5": "CMCC-CM2-SR5 (Italy)",
+    "cmcc_esm2": "CMCC-ESM2 (Italy)",
+    "cnrm_cm6_1": "CNRM-CM6-1 (France)",
+    "cnrm_cm6_1_hr": "CNRM-CM6-1-HR (France)",
+    "cnrm_esm2_1": "CNRM-ESM2-1 (France)",
+    "ec_earth3_cc": "EC-Earth3-CC (Europe)",
+    "fgoals_f3_l": "FGOALS-f3-L (China)",
+    "gfdl_esm4": "GFDL-ESM4 (USA)",
+    "hadgem3_gc31_ll": "HadGEM3-GC31-LL (UK)",
+    "iitm_esm": "IITM-ESM (India)",
+    "inm_cm4_8": "INM-CM4-8 (Russia)",
+    "inm_cm5_0": "INM-CM5-0 (Russia)",
+    "ipsl_cm6a_lr": "IPSL-CM6A-LR (France)",
+    "kace_1_0_g": "KACE-1-0-G (South Korea)",
+    "kiost_esm": "KIOST-ESM (South Korea)",
+    "miroc6": "MIROC6 (Japan)",
+    "miroc_es2l": "MIROC-ES2L (Japan)",
+    "mri_esm2_0": "MRI-ESM2-0 (Japan)",
+    "nesm3": "NESM3 (China)",
+    "noresm2_mm": "NorESM2-MM (Norway)",
+    "ukesm1_0_ll": "UKESM1-0-LL (UK)"
+}
+
 VARIABLES = {
     "temperature": "near_surface_air_temperature",
     "precipitation": "precipitation"
 }
+
 EXPERIMENTS = {
     "historical": "historical",
     "ssp245": "ssp2_4_5",
     "ssp585": "ssp5_8_5"
 }
+
 TEMPORAL_RESOLUTION = "daily"
 ALL_MONTHS = [f"{m:02d}" for m in range(1, 13)]
 ALL_DAYS = [f"{d:02d}" for d in range(1, 32)]
@@ -67,6 +109,7 @@ def build_request_params(
         experiment: str,
         latitude: float,
         longitude: float,
+        model: str,
         years: Optional[List[str]] = None
 ) -> Dict:
     """
@@ -77,19 +120,23 @@ def build_request_params(
         experiment: Experiment type ('historical', 'ssp245', or 'ssp585')
         latitude: Latitude coordinate (float)
         longitude: Longitude coordinate (float)
+        model: CMIP6 model to use (must be a key in MODELS dictionary)
         years: Optional list of years to retrieve (defaults to appropriate years for experiment)
 
     Returns:
         Dict: Dictionary of request parameters for CDS API
 
     Raises:
-        ValueError: If invalid variable or experiment is provided
+        ValueError: If invalid variable, experiment, or model is provided
     """
     if variable not in VARIABLES:
         raise ValueError(f"Invalid variable: {variable}. Must be one of {list(VARIABLES.keys())}")
 
     if experiment not in EXPERIMENTS:
         raise ValueError(f"Invalid experiment: {experiment}. Must be one of {list(EXPERIMENTS.keys())}")
+
+    if model not in MODELS:
+        raise ValueError(f"Invalid model: {model}. Must be one of {list(MODELS.keys())}")
 
     # Set appropriate years based on experiment if not explicitly provided
     if years is None:
@@ -107,7 +154,7 @@ def build_request_params(
         "temporal_resolution": TEMPORAL_RESOLUTION,
         "experiment": EXPERIMENTS[experiment],
         "variable": VARIABLES[variable],
-        "model": "ec_earth3_cc",  # Using EC-Earth3-CC model
+        "model": model,  # Use the provided model
         "year": years,
         "month": ALL_MONTHS,
         "day": ALL_DAYS,
@@ -125,6 +172,7 @@ def get_output_filename(
         experiment: str,
         latitude: float,
         longitude: float,
+        model: str,
         year_range: str
 ) -> str:
     """
@@ -135,6 +183,7 @@ def get_output_filename(
         experiment: Experiment type
         latitude: Latitude coordinate
         longitude: Longitude coordinate
+        model: CMIP6 model used
         year_range: String representing year range (e.g., "1995-2014")
 
     Returns:
@@ -145,7 +194,7 @@ def get_output_filename(
     lon_str = f"lon{longitude:.2f}".replace('.', 'p').replace('-', 'n')
 
     # Create filename
-    filename = f"cmip6_{experiment}_{variable}_{lat_str}_{lon_str}_{year_range}.nc"
+    filename = f"cmip6_{model}_{experiment}_{variable}_{lat_str}_{lon_str}_{year_range}.nc"
 
     return filename
 
@@ -207,6 +256,7 @@ def retrieve_cmip6_data(
         experiment: str,
         latitude: float,
         longitude: float,
+        model: str,
         output_dir: Union[str, Path],
         years: Optional[List[str]] = None
 ) -> Path:
@@ -218,6 +268,7 @@ def retrieve_cmip6_data(
         experiment: Experiment type ('historical', 'ssp245', or 'ssp585')
         latitude: Latitude coordinate
         longitude: Longitude coordinate
+        model: CMIP6 model to use (must be a key in MODELS dictionary)
         output_dir: Directory to store downloaded data
         years: Optional list of years to retrieve (defaults to appropriate years for experiment)
 
@@ -261,6 +312,7 @@ def retrieve_cmip6_data(
         experiment=experiment,
         latitude=latitude,
         longitude=longitude,
+        model=model,
         years=years
     )
 
@@ -270,6 +322,7 @@ def retrieve_cmip6_data(
         experiment=experiment,
         latitude=latitude,
         longitude=longitude,
+        model=model,
         year_range=year_range
     )
 
@@ -281,7 +334,7 @@ def retrieve_cmip6_data(
         return output_file
 
     # Create client and download data
-    logger.info(f"Downloading {variable} data for {experiment}")
+    logger.info(f"Downloading {variable} data for {experiment} using model {model}")
 
     try:
         client = create_cds_client()
@@ -350,6 +403,7 @@ def retrieve_cmip6_data(
 def retrieve_all_data_for_point(
         latitude: float,
         longitude: float,
+        model: str,
         output_dir: Union[str, Path],
         variables: List[str] = None,
         experiments: List[str] = None
@@ -360,6 +414,7 @@ def retrieve_all_data_for_point(
     Args:
         latitude: Latitude coordinate
         longitude: Longitude coordinate
+        model: CMIP6 model to use (must be a key in MODELS dictionary)
         output_dir: Directory to store downloaded data
         variables: List of variables to download (defaults to all)
         experiments: List of experiments to download (defaults to all)
@@ -373,17 +428,22 @@ def retrieve_all_data_for_point(
     if experiments is None:
         experiments = list(EXPERIMENTS.keys())
 
+    # Validate model
+    if model not in MODELS:
+        raise ValueError(f"Invalid model: {model}. Must be one of {list(MODELS.keys())}")
+
     results = {}
 
     for experiment in experiments:
         for variable in variables:
-            key = f"{experiment}_{variable}"
+            key = f"{model}_{experiment}_{variable}"
             try:
                 file_path = retrieve_cmip6_data(
                     variable=variable,
                     experiment=experiment,
                     latitude=latitude,
                     longitude=longitude,
+                    model=model,
                     output_dir=output_dir
                 )
                 results[key] = file_path

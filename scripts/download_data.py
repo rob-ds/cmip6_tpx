@@ -4,12 +4,20 @@ CMIP6 Data Download Script
 
 This script downloads CMIP6 climate data for specific point locations using the
 CDS API. It supports retrieving historical and projection data for temperature
-and precipitation variables.
+and precipitation variables across multiple CMIP6 models.
+
+Available models have been carefully selected to ensure they provide:
+1. Historical data (1995-2014)
+2. SSP2-4.5 projections (2015-2100)
+3. SSP5-8.5 projections (2015-2100)
+
+Only models that provide all three of these datasets are included to ensure
+consistent analysis across different climate scenarios.
 
 Example usage:
-    python download_data.py --lat 43.5 --lon 10.2 --variables temperature precipitation
-    python download_data.py --lat 43.5 --lon 10.2 --experiments historical ssp245
-    python download_data.py --coordinates coordinates.txt
+    python download_data.py --model ec_earth3_cc --lat 43.5 --lon 10.2 --variables temperature precipitation
+    python download_data.py --model hadgem3_gc31_mm --lat 43.5 --lon 10.2 --experiments historical ssp245
+    python download_data.py --model ec_earth3_cc --coordinates coordinates.txt
 """
 
 import sys
@@ -19,7 +27,7 @@ import argparse
 from pathlib import Path
 from typing import List, Tuple
 # Import project modules
-from src.data.retrieval import retrieve_all_data_for_point, VARIABLES, EXPERIMENTS
+from src.data.retrieval import retrieve_all_data_for_point, VARIABLES, EXPERIMENTS, MODELS
 
 # Add project root to path for importing project modules
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -105,6 +113,10 @@ def main():
     parser.add_argument("--lat", type=float, help="Latitude value")
     parser.add_argument("--lon", type=float, help="Longitude value")
 
+    # Define required model argument
+    parser.add_argument("--model", type=str, required=True, choices=list(MODELS.keys()),
+                        help=f"CMIP6 model to use. Available models: {', '.join(MODELS.keys())}")
+
     # Define optional arguments
     parser.add_argument("--variables", nargs="+", choices=list(VARIABLES.keys()),
                         default=list(VARIABLES.keys()), help="Climate variables to download")
@@ -143,6 +155,9 @@ def main():
     else:
         coordinates = [(args.lat, args.lon)]
 
+    # Log selected model
+    logger.info(f"Using CMIP6 model: {args.model} - {MODELS[args.model]}")
+
     # Process each coordinate
     logger.info(f"Starting download for {len(coordinates)} locations")
     for i, (lat, lon) in enumerate(coordinates, 1):
@@ -158,6 +173,7 @@ def main():
                 results = retrieve_all_data_for_point(
                     latitude=lat,
                     longitude=lon,
+                    model=args.model,
                     output_dir=output_dir,
                     variables=args.variables,
                     experiments=args.experiments
