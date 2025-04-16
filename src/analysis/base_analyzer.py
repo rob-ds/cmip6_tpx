@@ -7,7 +7,8 @@ This module defines the abstract base class for all analyzers in the CMIP6_TPX p
 import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Dict, Union, Any
+import numpy as np
+from typing import Dict, Union, Any, Tuple
 
 import xarray as xr
 
@@ -79,8 +80,7 @@ class BaseAnalyzer(ABC):
 
         logger.info(f"Initialized {self.__class__.__name__} for {variable}, {experiment}, month {month}, model {model}")
 
-    @staticmethod
-    def _format_coordinate(value: float, prefix: str = "") -> str:
+    def _format_coordinate(self, value: float, prefix: str = "") -> str:
         """
         Format a coordinate value for use in filenames.
 
@@ -95,6 +95,52 @@ class BaseAnalyzer(ABC):
         if prefix:
             return f"{prefix}{formatted}"
         return formatted
+
+    def _find_center_indices(self, latitude_array, longitude_array) -> Tuple[int, int]:
+        """
+        Find the center indices for latitude and longitude dimensions.
+
+        This method handles arrays of any length:
+        - For length 1, returns 0
+        - For odd lengths, returns the true middle
+        - For even lengths, returns the index just before the middle
+
+        Args:
+            latitude_array: Array of latitude values
+            longitude_array: Array of longitude values
+
+        Returns:
+            Tuple of (lat_center_idx, lon_center_idx)
+        """
+        lat_center_idx = (len(latitude_array) - 1) // 2
+        lon_center_idx = (len(longitude_array) - 1) // 2
+
+        return lat_center_idx, lon_center_idx
+
+    def _extract_variable_at_center(self, dataset, variable_name, lat_idx, lon_idx) -> np.ndarray:
+        """
+        Extract variable values at the center point from a dataset.
+
+        This method handles different dataset structures:
+        - 3D arrays with (time, lat, lon) dimensions
+        - 1D arrays with only time dimension
+
+        Args:
+            dataset: xarray Dataset containing the variable
+            variable_name: Name of the variable to extract
+            lat_idx: Center latitude index
+            lon_idx: Center longitude index
+
+        Returns:
+            NumPy array of variable values at the center point
+        """
+        var_data = dataset[variable_name]
+
+        # Check if the variable has spatial dimensions
+        if len(var_data.shape) > 1:  # Multi-dimensional grid
+            return var_data[:, lat_idx, lon_idx].values
+        else:  # Single point data (only time dimension)
+            return var_data[:].values
 
     def load_data(self) -> None:
         """
@@ -138,39 +184,33 @@ class BaseAnalyzer(ABC):
         # Load projection data
         projection_ds = xr.open_dataset(projection_file)
 
-        # Calculate center indices for lat and lon dimensions
-        lat_center_idx = (len(historical_ds.lat) - 1) // 2
-        lon_center_idx = (len(historical_ds.lon) - 1) // 2
+        # Find center indices for lat and lon dimensions
+        lat_center_idx, lon_center_idx = self._find_center_indices(historical_ds.lat, historical_ds.lon)
 
         # Extract center point coordinates
         self.lat = float(historical_ds.lat[lat_center_idx].values)
         self.lon = float(historical_ds.lon[lon_center_idx].values)
 
         logger.info(
-            f"Center point coordinates: lat={self.lat}, lon={self.lon} (from {len(historical_ds.lat)}×{len(historical_ds.lon)} grid)")
+            f"Center point coordinates: lat={self.lat}, lon={self.lon} "
+            f"(from {len(historical_ds.lat)}×{len(historical_ds.lon)} grid)")
 
         # Extract center point data for the variable
-        if len(historical_ds[self.nc_var_name].shape) > 1:  # Multi-dimensional grid
-            historical_var = historical_ds[self.nc_var_name][:, lat_center_idx, lon_center_idx].values
-            projection_var = projection_ds[self.nc_var_name][:, lat_center_idx, lon_center_idx].values
-        else:  # Single point data (only time dimension)
-            historical_var = historical_ds[self.nc_var_name][:].values
-            projection_var = projection_ds[self.nc_var_name][:].values
-
-        # Extract time variables
-        historical_time = historical_ds.time.values
-        projection_time = projection_ds.time.values
+        historical_var = self._extract_variable_at_center(historical_ds, self.nc_var_name, lat_center_idx,
+                                                          lon_center_idx)
+        projection_var = self._extract_variable_at_center(projection_ds, self.nc_var_name, lat_center_idx,
+                                                          lon_center_idx)
 
         # Create xarray DataArrays with time as dimension
         self.historical_data = xr.DataArray(
             data=historical_var,
-            coords={'time': historical_time},
+            coords={'time': historical_ds.time.values},
             dims=['time']
         )
 
         self.projection_data = xr.DataArray(
             data=projection_var,
-            coords={'time': projection_time},
+            coords={'time': projection_ds.time.values},
             dims=['time']
         )
 

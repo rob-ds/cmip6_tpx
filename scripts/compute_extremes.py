@@ -11,9 +11,9 @@ It processes both temperature and precipitation variables together, applying:
 3. Basic and advanced compound extreme indices capturing temperature-precipitation interactions
 
 Example usage:
-    python compute_extremes.py --experiment ssp245 --month 7
-    python compute_extremes.py --experiment ssp585 --month 1 --temperature-threshold 90 --precipitation-threshold 95
-    python compute_extremes.py --all-experiments --month 7 --heat-wave-min-duration 3
+    python compute_extremes.py --experiment ssp245 --month 7 --model ec_earth3_cc
+    python compute_extremes.py --experiment ssp585 --month 1 --model hadgem3_gc31_ll --temperature-threshold 90 --precipitation-threshold 95
+    python compute_extremes.py --all-experiments --month 7 --model cesm2 --heat-wave-min-duration 3
 """
 
 import sys
@@ -23,6 +23,7 @@ from pathlib import Path
 
 # Import project modules
 from src.analysis.extremes import ExtremesAnalyzer
+from src.data.retrieval import MODELS  # Import available models
 
 # Add project root to path for importing project modules
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -51,6 +52,8 @@ def main():
                         help="Experiment to analyze")
     parser.add_argument("--month", type=int, required=True, choices=range(1, 13),
                         help="Month to analyze (1-12)")
+    parser.add_argument("--model", type=str, required=True, choices=list(MODELS.keys()),
+                        help=f"CMIP6 model to use. Available models: {', '.join(MODELS.keys())}")
 
     # Define optional arguments
     parser.add_argument("--all-experiments", action="store_true",
@@ -93,11 +96,12 @@ def main():
     # Define experiments to analyze
     experiments = ["ssp245", "ssp585"] if args.all_experiments else [args.experiment]
 
+    logger.info(f"Using model {args.model} ({MODELS[args.model]})")
     logger.info(f"Analyzing {len(experiments)} experiments for month {args.month}")
 
     # Process each experiment
     for experiment in experiments:
-        logger.info(f"Processing {experiment}, month {args.month}")
+        logger.info(f"Processing {experiment}, month {args.month}, model {args.model}")
 
         # Create analyzer
         analyzer = ExtremesAnalyzer(
@@ -105,6 +109,7 @@ def main():
             month=args.month,
             input_dir=input_dir,
             output_dir=output_dir,
+            model=args.model,  # Pass model parameter
             temperature_threshold_percentile=args.temperature_threshold,
             precipitation_threshold_percentile=args.precipitation_threshold,
             wet_day_threshold=args.wet_day_threshold,

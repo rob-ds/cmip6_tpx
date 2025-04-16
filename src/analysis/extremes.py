@@ -41,6 +41,7 @@ class ExtremesAnalyzer(BaseAnalyzer):
             month: int,
             input_dir: Union[str, Path],
             output_dir: Union[str, Path],
+            model: str = "ec_earth3_cc",  # Add model parameter with default
             temperature_threshold_percentile: float = 90.0,
             precipitation_threshold_percentile: float = 95.0,
             wet_day_threshold: float = 1.0,
@@ -55,15 +56,16 @@ class ExtremesAnalyzer(BaseAnalyzer):
             month: Month to analyze (1-12)
             input_dir: Directory containing input data
             output_dir: Directory to store output data
+            model: CMIP6 model to use (default: ec_earth3_cc for backward compatibility)
             temperature_threshold_percentile: Percentile threshold for temperature extremes (90 for standard ETCCDI)
             precipitation_threshold_percentile: Percentile threshold for precipitation extremes (95 for standard ETCCDI)
             wet_day_threshold: Threshold for wet day identification (1.0 mm/day by ETCCDI standard)
-            dry_day_threshold: Threshold for dry day identification (1.0 mm/day by ETCCDI standard)
+            dry_day_threshold: Threshold for dry day identification in hot-dry analysis (1.0 mm/day by ETCCDI standard)
             heat_wave_min_duration: Minimum consecutive days for heat wave/warm spell (6 days by ETCCDI standard)
         """
         # Call the parent constructor with the default variable to initialize base attributes
         # We'll load both variables later
-        super().__init__('temperature', experiment, month, input_dir, output_dir)
+        super().__init__('temperature', experiment, month, input_dir, output_dir, model)
 
         # Store thresholds
         self.temperature_threshold_percentile = temperature_threshold_percentile
@@ -119,7 +121,7 @@ class ExtremesAnalyzer(BaseAnalyzer):
         self.is_data_loaded = False
 
         logger.info(f"Initialized {self.__class__.__name__} for both temperature and precipitation, "
-                    f"{experiment}, month {month}")
+                    f"{experiment}, month {month}, model {model}")
 
     def load_data(self) -> None:
         """
@@ -127,9 +129,31 @@ class ExtremesAnalyzer(BaseAnalyzer):
         """
         logger.info("Loading temperature and precipitation data")
 
-        # Load temperature data
-        historical_file = self._find_file(self.input_dir / "raw" / "historical", "historical_temperature")
-        projection_file = self._find_file(self.input_dir / "raw" / "projections", f"{self.experiment}_temperature")
+        # Load temperature data with new model-specific patterns
+        # New format with model pattern
+        temp_historical_pattern = f"cmip6_{self.model}_historical_temperature"
+        temp_projection_pattern = f"cmip6_{self.model}_{self.experiment}_temperature"
+
+        # Legacy format (fallback)
+        legacy_temp_historical_pattern = "historical_temperature"
+        legacy_temp_projection_pattern = f"{self.experiment}_temperature"
+
+        # Try to find files with new format first, then fall back to legacy format
+        try:
+            historical_file = self._find_file(self.input_dir / "raw" / "historical", temp_historical_pattern)
+            logger.info(f"Found temperature historical data using new filename pattern: {historical_file}")
+        except FileNotFoundError:
+            # Try legacy format as fallback
+            historical_file = self._find_file(self.input_dir / "raw" / "historical", legacy_temp_historical_pattern)
+            logger.info(f"Found temperature historical data using legacy filename pattern: {historical_file}")
+
+        try:
+            projection_file = self._find_file(self.input_dir / "raw" / "projections", temp_projection_pattern)
+            logger.info(f"Found temperature projection data using new filename pattern: {projection_file}")
+        except FileNotFoundError:
+            # Try legacy format as fallback
+            projection_file = self._find_file(self.input_dir / "raw" / "projections", legacy_temp_projection_pattern)
+            logger.info(f"Found temperature projection data using legacy filename pattern: {projection_file}")
 
         logger.info(f"Loading temperature historical data from {historical_file}")
         logger.info(f"Loading temperature projection data from {projection_file}")
@@ -138,13 +162,22 @@ class ExtremesAnalyzer(BaseAnalyzer):
         temp_historical_ds = xr.open_dataset(historical_file)
         temp_projection_ds = xr.open_dataset(projection_file)
 
-        # Extract center point coordinates
-        self.lat = float(temp_historical_ds.lat[1].values)
-        self.lon = float(temp_historical_ds.lon[1].values)
+        # Find center indices for lat and lon dimensions
+        lat_center_idx, lon_center_idx = self._find_center_indices(temp_historical_ds.lat, temp_historical_ds.lon)
 
-        # Extract temperature data
-        temp_historical_var = temp_historical_ds['tas'][:, 1, 1].values
-        temp_projection_var = temp_projection_ds['tas'][:, 1, 1].values
+        # Extract center point coordinates
+        self.lat = float(temp_historical_ds.lat[lat_center_idx].values)
+        self.lon = float(temp_historical_ds.lon[lon_center_idx].values)
+
+        logger.info(
+            f"Center point coordinates: lat={self.lat}, lon={self.lon} "
+            f"(from {len(temp_historical_ds.lat)}×{len(temp_historical_ds.lon)} grid)")
+
+        # Extract temperature data using helper method
+        temp_historical_var = self._extract_variable_at_center(temp_historical_ds, 'tas', lat_center_idx,
+                                                               lon_center_idx)
+        temp_projection_var = self._extract_variable_at_center(temp_projection_ds, 'tas', lat_center_idx,
+                                                               lon_center_idx)
 
         # Create temperature DataArrays
         self.temperature_historical_data = xr.DataArray(
@@ -159,9 +192,31 @@ class ExtremesAnalyzer(BaseAnalyzer):
             dims=['time']
         )
 
-        # Load precipitation data
-        historical_file = self._find_file(self.input_dir / "raw" / "historical", "historical_precipitation")
-        projection_file = self._find_file(self.input_dir / "raw" / "projections", f"{self.experiment}_precipitation")
+        # Load precipitation data with model-specific patterns
+        # New format with model pattern
+        precip_historical_pattern = f"cmip6_{self.model}_historical_precipitation"
+        precip_projection_pattern = f"cmip6_{self.model}_{self.experiment}_precipitation"
+
+        # Legacy format (fallback)
+        legacy_precip_historical_pattern = "historical_precipitation"
+        legacy_precip_projection_pattern = f"{self.experiment}_precipitation"
+
+        # Try to find files with new format first, then fall back to legacy format
+        try:
+            historical_file = self._find_file(self.input_dir / "raw" / "historical", precip_historical_pattern)
+            logger.info(f"Found precipitation historical data using new filename pattern: {historical_file}")
+        except FileNotFoundError:
+            # Try legacy format as fallback
+            historical_file = self._find_file(self.input_dir / "raw" / "historical", legacy_precip_historical_pattern)
+            logger.info(f"Found precipitation historical data using legacy filename pattern: {historical_file}")
+
+        try:
+            projection_file = self._find_file(self.input_dir / "raw" / "projections", precip_projection_pattern)
+            logger.info(f"Found precipitation projection data using new filename pattern: {projection_file}")
+        except FileNotFoundError:
+            # Try legacy format as fallback
+            projection_file = self._find_file(self.input_dir / "raw" / "projections", legacy_precip_projection_pattern)
+            logger.info(f"Found precipitation projection data using legacy filename pattern: {projection_file}")
 
         logger.info(f"Loading precipitation historical data from {historical_file}")
         logger.info(f"Loading precipitation projection data from {projection_file}")
@@ -170,9 +225,12 @@ class ExtremesAnalyzer(BaseAnalyzer):
         precip_historical_ds = xr.open_dataset(historical_file)
         precip_projection_ds = xr.open_dataset(projection_file)
 
-        # Extract precipitation data
-        precip_historical_var = precip_historical_ds['pr'][:, 1, 1].values
-        precip_projection_var = precip_projection_ds['pr'][:, 1, 1].values
+        # Extract precipitation data with flexible coordinate logic
+        lat_center_idx, lon_center_idx = self._find_center_indices(precip_historical_ds.lat, precip_historical_ds.lon)
+        precip_historical_var = self._extract_variable_at_center(precip_historical_ds, 'pr', lat_center_idx,
+                                                                 lon_center_idx)
+        precip_projection_var = self._extract_variable_at_center(precip_projection_ds, 'pr', lat_center_idx,
+                                                                 lon_center_idx)
 
         # Create precipitation DataArrays
         self.precipitation_historical_data = xr.DataArray(
@@ -751,7 +809,7 @@ class ExtremesAnalyzer(BaseAnalyzer):
                 }
             },
             'attrs': {
-                'description': f'Climate extremes for {self.experiment}, month {self.month}',
+                'description': f'Climate extremes for {self.experiment}, month {self.month}, model {self.model}',
                 'historical_period': '1995-2014',
                 'projection_period': '2015-2100',
                 'methodology': 'Adapted ETCCDI for daily mean temperature data',
@@ -763,7 +821,8 @@ class ExtremesAnalyzer(BaseAnalyzer):
                 'precipitation_threshold_value': self.precipitation_threshold_value,
                 'wet_day_threshold': self.wet_day_threshold,
                 'dry_day_threshold': self.dry_day_threshold,
-                'heat_wave_min_duration': self.heat_wave_min_duration
+                'heat_wave_min_duration': self.heat_wave_min_duration,
+                'model': self.model  # Add model to attributes
             },
             'data_vars': {}
         }
@@ -1009,8 +1068,12 @@ class ExtremesAnalyzer(BaseAnalyzer):
             Path to output file
         """
         if filename is None:
-            # Create default filename if not provided
-            filename = f"extremes_{self.experiment}_month{self.month:02d}.nc"
+            # Format latitude and longitude for filename
+            lat_str = self._format_coordinate(self.lat, "lat")
+            lon_str = self._format_coordinate(self.lon, "lon")
+
+            # Create default filename including model and coordinates
+            filename = f"extremes_{self.model}_{self.experiment}_month{self.month:02d}_{lat_str}_{lon_str}.nc"
 
         # Use parent class method to save the file
         output_file = super().save_results(results, filename=filename)
