@@ -6,7 +6,8 @@ projection data.
 """
 
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Union
+from pathlib import Path
 
 from .base_analyzer import BaseAnalyzer
 
@@ -21,6 +22,28 @@ class AnomalyAnalyzer(BaseAnalyzer):
     This class computes raw anomalies from historical climatology for
     the specified variable, experiment, and month.
     """
+
+    def __init__(
+            self,
+            variable: str,
+            experiment: str,
+            month: int,
+            input_dir: Union[str, Path],
+            output_dir: Union[str, Path],
+            model: str = "ec_earth3_cc"  # Add model parameter with default
+    ):
+        """
+        Initialize the analyzer.
+
+        Args:
+            variable: Climate variable to analyze ('temperature' or 'precipitation')
+            experiment: Experiment to analyze ('ssp245' or 'ssp585')
+            month: Month to analyze (1-12)
+            input_dir: Directory containing input data
+            output_dir: Directory to store output data
+            model: CMIP6 model to use
+        """
+        super().__init__(variable, experiment, month, input_dir, output_dir, model)
 
     def compute(self) -> Dict[str, Any]:
         """
@@ -94,9 +117,13 @@ class AnomalyAnalyzer(BaseAnalyzer):
                 }
             },
             'attrs': {
-                'description': f'Climate anomalies for {self.variable}, {self.experiment}, month {self.month}',
+                'description': (
+                    f'Climate anomalies for {self.variable}, {self.experiment}, '
+                    f'month {self.month}, model {self.model}'
+                ),
                 'historical_period': '1995-2014',
-                'projection_period': '2015-2100'
+                'projection_period': '2015-2100',
+                'model': self.model  # Add model to attributes
             }
         }
 

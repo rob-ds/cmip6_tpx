@@ -38,6 +38,7 @@ class VariabilityAnalyzer(BaseAnalyzer):
             month: int,
             input_dir: Union[str, Path],
             output_dir: Union[str, Path],
+            model: str = "ec_earth3_cc",  # Add model parameter with default
             highpass_cutoff: float = 10.0,
             lowpass_cutoff: float = 20.0,
             window_size: int = 11
@@ -51,11 +52,12 @@ class VariabilityAnalyzer(BaseAnalyzer):
             month: Month to analyze (1-12)
             input_dir: Directory containing input data
             output_dir: Directory to store output data
+            model: CMIP6 model to use
             highpass_cutoff: Cutoff period for high-pass filter (years)
             lowpass_cutoff: Cutoff period for low-pass filter (years)
             window_size: Size of sliding window for standard deviation (years)
         """
-        super().__init__(variable, experiment, month, input_dir, output_dir)
+        super().__init__(variable, experiment, month, input_dir, output_dir, model)
 
         self.highpass_cutoff = highpass_cutoff
         self.lowpass_cutoff = lowpass_cutoff
@@ -117,7 +119,8 @@ class VariabilityAnalyzer(BaseAnalyzer):
             experiment=self.experiment,
             month=self.month,
             input_dir=self.input_dir,
-            output_dir=self.output_dir
+            output_dir=self.output_dir,
+            model=self.model  # Pass model parameter
         )
 
         # Use the loaded data instead of loading again
@@ -349,13 +352,14 @@ class VariabilityAnalyzer(BaseAnalyzer):
             'attrs': {
                 'description': (
                     f'Multi-scale climate variability for {self.variable}, '
-                    f'{self.experiment}, month {self.month}'
+                    f'{self.experiment}, month {self.month}, model {self.model}'
                 ),
                 'historical_period': '1995-2014',
                 'projection_period': '2015-2100',
                 'highpass_cutoff': self.highpass_cutoff,
                 'lowpass_cutoff': self.lowpass_cutoff,
-                'window_size': self.window_size
+                'window_size': self.window_size,
+                'model': self.model  # Add model to attributes
             }
         }
 

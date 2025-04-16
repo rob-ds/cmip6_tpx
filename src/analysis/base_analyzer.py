@@ -30,6 +30,7 @@ class BaseAnalyzer(ABC):
             month: int,
             input_dir: Union[str, Path],
             output_dir: Union[str, Path],
+            model: str = "ec_earth3_cc",  # Default model for backward compatibility
     ):
         """
         Initialize the analyzer.
@@ -40,10 +41,12 @@ class BaseAnalyzer(ABC):
             month: Month to analyze (1-12)
             input_dir: Directory containing input data
             output_dir: Directory to store output data
+            model: CMIP6 model to use (default: ec_earth3_cc for backward compatibility)
         """
         self.variable = variable
         self.experiment = experiment
         self.month = month
+        self.model = model  # Store model name
 
         # Convert path strings to Path objects
         self.input_dir = Path(input_dir)
@@ -74,7 +77,24 @@ class BaseAnalyzer(ABC):
         # Track processing state
         self.is_data_loaded = False
 
-        logger.info(f"Initialized {self.__class__.__name__} for {variable}, {experiment}, month {month}")
+        logger.info(f"Initialized {self.__class__.__name__} for {variable}, {experiment}, month {month}, model {model}")
+
+    @staticmethod
+    def _format_coordinate(value: float, prefix: str = "") -> str:
+        """
+        Format a coordinate value for use in filenames.
+
+        Args:
+            value: Coordinate value (latitude or longitude)
+            prefix: Optional prefix to add (e.g., 'lat' or 'lon')
+
+        Returns:
+            Formatted coordinate string (e.g., 'lat38p25' for 38.25)
+        """
+        formatted = f"{value:.2f}".replace('.', 'p').replace('-', 'n')
+        if prefix:
+            return f"{prefix}{formatted}"
+        return formatted
 
     def load_data(self) -> None:
         """
@@ -83,9 +103,31 @@ class BaseAnalyzer(ABC):
         This method loads the data from the input directory, extracts the center point
         from the 3x3 grid, and stores the results in the instance variables.
         """
-        # Construct file paths
-        historical_file = self._find_file(self.input_dir / "raw" / "historical", f"historical_{self.variable}")
-        projection_file = self._find_file(self.input_dir / "raw" / "projections", f"{self.experiment}_{self.variable}")
+        # Construct file patterns - handle both new and legacy file formats
+        # New format with model and specific coordinates
+        historical_pattern = f"cmip6_{self.model}_historical_{self.variable}"
+        projection_pattern = f"cmip6_{self.model}_{self.experiment}_{self.variable}"
+
+        # Legacy format (fallback)
+        legacy_historical_pattern = f"historical_{self.variable}"
+        legacy_projection_pattern = f"{self.experiment}_{self.variable}"
+
+        # Try to find files with new format first, then fall back to legacy format
+        try:
+            historical_file = self._find_file(self.input_dir / "raw" / "historical", historical_pattern)
+            logger.info(f"Found historical data using new filename pattern: {historical_file}")
+        except FileNotFoundError:
+            # Try legacy format as fallback
+            historical_file = self._find_file(self.input_dir / "raw" / "historical", legacy_historical_pattern)
+            logger.info(f"Found historical data using legacy filename pattern: {historical_file}")
+
+        try:
+            projection_file = self._find_file(self.input_dir / "raw" / "projections", projection_pattern)
+            logger.info(f"Found projection data using new filename pattern: {projection_file}")
+        except FileNotFoundError:
+            # Try legacy format as fallback
+            projection_file = self._find_file(self.input_dir / "raw" / "projections", legacy_projection_pattern)
+            logger.info(f"Found projection data using legacy filename pattern: {projection_file}")
 
         logger.info(f"Loading historical data from {historical_file}")
         logger.info(f"Loading projection data from {projection_file}")
@@ -96,15 +138,24 @@ class BaseAnalyzer(ABC):
         # Load projection data
         projection_ds = xr.open_dataset(projection_file)
 
-        # Extract center point coordinates
-        self.lat = float(historical_ds.lat[1].values)
-        self.lon = float(historical_ds.lon[1].values)
+        # Calculate center indices for lat and lon dimensions
+        lat_center_idx = (len(historical_ds.lat) - 1) // 2
+        lon_center_idx = (len(historical_ds.lon) - 1) // 2
 
-        logger.info(f"Center point coordinates: lat={self.lat}, lon={self.lon}")
+        # Extract center point coordinates
+        self.lat = float(historical_ds.lat[lat_center_idx].values)
+        self.lon = float(historical_ds.lon[lon_center_idx].values)
+
+        logger.info(
+            f"Center point coordinates: lat={self.lat}, lon={self.lon} (from {len(historical_ds.lat)}×{len(historical_ds.lon)} grid)")
 
         # Extract center point data for the variable
-        historical_var = historical_ds[self.nc_var_name][:, 1, 1].values
-        projection_var = projection_ds[self.nc_var_name][:, 1, 1].values
+        if len(historical_ds[self.nc_var_name].shape) > 1:  # Multi-dimensional grid
+            historical_var = historical_ds[self.nc_var_name][:, lat_center_idx, lon_center_idx].values
+            projection_var = projection_ds[self.nc_var_name][:, lat_center_idx, lon_center_idx].values
+        else:  # Single point data (only time dimension)
+            historical_var = historical_ds[self.nc_var_name][:].values
+            projection_var = projection_ds[self.nc_var_name][:].values
 
         # Extract time variables
         historical_time = historical_ds.time.values
@@ -134,8 +185,7 @@ class BaseAnalyzer(ABC):
 
         logger.info("Data loading complete")
 
-    @staticmethod
-    def _find_file(directory: Path, name_pattern: str) -> Path:
+    def _find_file(self, directory: Path, name_pattern: str) -> Path:
         """
         Find a file in the specified directory that matches the name pattern.
 
@@ -149,11 +199,29 @@ class BaseAnalyzer(ABC):
         Raises:
             FileNotFoundError: If no matching file is found
         """
+        matching_files = []
+
         for file_path in directory.glob("*.nc"):
             if name_pattern in file_path.name:
-                return file_path
+                # If we have latitude and longitude, try to match more specifically
+                if self.lat is not None and self.lon is not None:
+                    lat_str = self._format_coordinate(self.lat, "lat")
+                    lon_str = self._format_coordinate(self.lon, "lon")
 
-        raise FileNotFoundError(f"No file matching '{name_pattern}' found in {directory}")
+                    # If file contains the specific coordinate, prioritize it
+                    if lat_str in file_path.name and lon_str in file_path.name:
+                        logger.debug(f"Found exact coordinate match: {file_path}")
+                        return file_path
+
+                matching_files.append(file_path)
+
+        if not matching_files:
+            raise FileNotFoundError(f"No file matching '{name_pattern}' found in {directory}")
+
+        # If multiple files match but none with exact coordinates, select the most recent one
+        newest_file = sorted(matching_files, key=lambda p: p.stat().st_mtime, reverse=True)[0]
+        logger.debug(f"Selected newest matching file: {newest_file}")
+        return newest_file
 
     def _filter_month(self) -> None:
         """
@@ -224,9 +292,12 @@ class BaseAnalyzer(ABC):
             Path to the saved file
         """
         if not filename:
-            # Create default filename
-            spatial_info = f"lat{self.lat:.2f}_lon{self.lon:.2f}".replace('.', 'p').replace('-', 'n')
-            filename = f"{self.variable}_{self.experiment}_month{self.month:02d}_{spatial_info}.nc"
+            # Format latitude and longitude for filename
+            lat_str = self._format_coordinate(self.lat, "lat")
+            lon_str = self._format_coordinate(self.lon, "lon")
+
+            # Create default filename including model
+            filename = f"{self.variable}_{self.model}_{self.experiment}_month{self.month:02d}_{lat_str}_{lon_str}.nc"
 
         output_path = self.output_dir / filename
 
@@ -239,6 +310,7 @@ class BaseAnalyzer(ABC):
         ds.attrs['month'] = self.month
         ds.attrs['latitude'] = self.lat
         ds.attrs['longitude'] = self.lon
+        ds.attrs['model'] = self.model  # Add model to metadata
 
         # Save to NetCDF
         ds.to_netcdf(output_path)

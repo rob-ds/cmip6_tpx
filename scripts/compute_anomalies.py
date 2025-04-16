@@ -4,12 +4,12 @@ CMIP6 Multi-scale Anomaly Computation Script
 
 This script computes multiscale anomalies from CMIP6 climate data for specific
 point locations. It supports both temperature and precipitation variables, and
-both ssp245 and ssp585 experiments.
+both ssp245 and ssp585 experiments across multiple CMIP6 models.
 
 Example usage:
-    python compute_anomalies.py --variable temperature --experiment ssp245 --month 7
-    python compute_anomalies.py --variable precipitation --experiment ssp585 --month 1
-    python compute_anomalies.py --all-combinations --month 7
+    python compute_anomalies.py --variable temperature --experiment ssp245 --month 7 --model ec_earth3_cc
+    python compute_anomalies.py --variable precipitation --experiment ssp585 --month 1 --model hadgem3_gc31_mm
+    python compute_anomalies.py --all-combinations --month 7 --model ec_earth3_cc
 """
 
 import sys
@@ -19,6 +19,7 @@ from pathlib import Path
 
 # Import project modules
 from src.analysis.variability import VariabilityAnalyzer
+from src.data.retrieval import MODELS  # Import available models
 
 # Add project root to path for importing project modules
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -47,6 +48,10 @@ def main():
                         help="Experiment to analyze")
     parser.add_argument("--month", type=int, required=True, choices=range(1, 13),
                         help="Month to analyze (1-12)")
+
+    # Add model selection argument
+    parser.add_argument("--model", type=str, required=True, choices=list(MODELS.keys()),
+                        help=f"CMIP6 model to use. Available models: {', '.join(MODELS.keys())}")
 
     # Define optional arguments
     parser.add_argument("--all-combinations", action="store_true",
@@ -87,11 +92,12 @@ def main():
     else:
         combinations = [(args.variable, args.experiment)]
 
+    logger.info(f"Using model {args.model} ({MODELS[args.model]})")
     logger.info(f"Analyzing {len(combinations)} combinations for month {args.month}")
 
     # Process each combination
     for variable, experiment in combinations:
-        logger.info(f"Processing {variable}, {experiment}, month {args.month}")
+        logger.info(f"Processing {variable}, {experiment}, month {args.month}, model {args.model}")
 
         # Create analyzer
         analyzer = VariabilityAnalyzer(
@@ -100,6 +106,7 @@ def main():
             month=args.month,
             input_dir=input_dir,
             output_dir=output_dir,
+            model=args.model,  # Pass model parameter
             highpass_cutoff=args.highpass_cutoff,
             lowpass_cutoff=args.lowpass_cutoff,
             window_size=args.window_size
