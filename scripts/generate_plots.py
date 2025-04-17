@@ -26,7 +26,7 @@ Example usage:
     # Time series for temperature metric
     python generate_plots.py --viz-type timeseries --variable temperature --experiment ssp585 --month 7 --metric warm_spell_days --model noresm2_mm
 
-    # Paired time series with consistent y-axis range (generates both SSP245 and SSP585 plots)
+    # Paired time series with consistent y-axis range (for direct SSP-4.5-SSP-8.5 scenario comparison)
     python generate_plots.py --viz-type timeseries --variable temperature --month 7 --metric tm_max --consistent-range --model hadgem3_gc31_ll
 
     # Heatmap for temperature metric across summer months
@@ -36,7 +36,7 @@ Example usage:
     # Time series for precipitation metric
     python generate_plots.py --viz-type timeseries --variable precipitation --experiment ssp245 --month 1 --metric rx1day --model ec_earth3_cc
 
-    # Paired time series with consistent y-axis (for direct scenario comparison)
+    # Paired time series with consistent y-axis (for direct SSP-4.5-SSP-8.5 scenario comparison)
     python generate_plots.py --viz-type timeseries --variable precipitation --month 10 --metric rx1day --consistent-range --model hadgem3_gc31_ll
 
     # Heatmap for precipitation metric across all months
@@ -250,14 +250,7 @@ def generate_paired_metric_timeseries(variable, metric, month, model, input_dir,
         )
 
         # Generate plot with consistent y-axis limits
-        plotter.load_data(data_type='extremes')
         fig = plotter.plot_metric_time_series(y_min=y_min, y_max=y_max)
-
-        # Extract metric metadata if available
-        if metric in plotter.data:
-            metric_name = plotter.data[metric].attrs.get('long_name', metric)
-        else:
-            metric_name = metric
 
         # Export figure
         filename = f"{variable}_{model}_{experiment}_month{month:02d}_{metric}_consistent_range"
@@ -265,7 +258,7 @@ def generate_paired_metric_timeseries(variable, metric, month, model, input_dir,
             "Variable": variable,
             "Experiment": experiment,
             "Month": str(month),
-            "Metric": metric_name,
+            "Metric": metric,
             "Model": model,
             "Type": "Time Series (Consistent Range)"
         }
@@ -276,7 +269,7 @@ def generate_paired_metric_timeseries(variable, metric, month, model, input_dir,
             filename=filename,
             formats=formats,
             dpi=dpi,
-            metadata=metadata
+            metadata=None
         )
 
         # Close figure
@@ -511,7 +504,7 @@ def generate_anomaly_plot(variable, experiment, month, model, input_dir, output_
         filename=filename,
         formats=formats,
         dpi=dpi,
-        metadata=metadata
+        metadata=None
     )
 
     # Close figure
@@ -567,7 +560,7 @@ def generate_metric_timeseries(variable, experiment, month, metric, model, input
         filename=filename,
         formats=formats,
         dpi=dpi,
-        metadata=metadata
+        metadata=None
     )
 
     # Close figure
@@ -624,7 +617,7 @@ def generate_metric_heatmap(variable, experiment, metric, months, model, input_d
         filename=filename,
         formats=formats,
         dpi=dpi,
-        metadata=metadata
+        metadata=None
     )
 
     # Close figure
@@ -671,7 +664,7 @@ def generate_location_plot(variable, experiment, month, model, input_dir, output
         filename=filename,
         formats=formats,
         dpi=dpi,
-        metadata=metadata
+        metadata=None
     )
 
     # Close figure

@@ -261,7 +261,7 @@ class ExtremeStatisticsPlotter(BasePlotter):
                     linewidth=2, label='Trend', zorder=4)
 
             # Explicitly add legend
-            ax.legend(loc='upper right', framealpha=0.9, edgecolor='gray', fontsize=12,
+            ax.legend(loc='upper right', framealpha=0.5, edgecolor='gray', fontsize=12,
                       bbox_to_anchor=(0.98, 0.98), borderpad=0.5)
 
         # Add statistics text box if available
@@ -276,12 +276,21 @@ class ExtremeStatisticsPlotter(BasePlotter):
             # Place text box in top left with background
             ax.text(0.03, 0.97, stats_text, transform=ax.transAxes,
                     fontsize=12, verticalalignment='top', horizontalalignment='left',
-                    bbox=dict(boxstyle='round', facecolor='white', alpha=1.0, pad=0.5),
+                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.5, pad=0.5),
                     zorder=100)
 
         # Set y-axis limits if provided
         if y_min is not None and y_max is not None:
             ax.set_ylim(y_min, y_max)
+
+        # Add box around the plot with solid black lines
+        for spine in ax.spines.values():
+            spine.set_visible(True)
+            spine.set_color('black')
+            spine.set_linewidth(1.0)
+
+        # Make sure grid is behind data
+        ax.set_axisbelow(True)
 
         # Add labels and title
         ax.set_xlabel('Year', fontsize=12)
@@ -293,13 +302,24 @@ class ExtremeStatisticsPlotter(BasePlotter):
 
         # Add overall title
         title = f"{metric_long_name} - {self.experiment.upper()}"
-        subtitle = f"Month: {self._get_month_name(self.month)}, Location: {self.latitude:.2f}°, {self.longitude:.2f}°"
+
+        # Convert coordinates to cardinal format
+        lat_dir = "N" if self.latitude >= 0 else "S"
+        lat_val = abs(self.latitude)
+
+        # Handle longitude conversion
+        adj_lon = self.longitude if self.longitude <= 180 else self.longitude - 360
+        lon_dir = "E" if adj_lon >= 0 else "W"
+        lon_val = abs(adj_lon)
+
+        subtitle = (f"Month: {self._get_month_name(self.month)}, "
+                    f"Location: {lat_val:.2f}°{lat_dir}, {lon_val:.2f}°{lon_dir}")
         self.add_title(title, subtitle)
 
         # Add description at the bottom
-        metadata_text = (f"Variable: {self.variable}, Experiment: {self.experiment}, "
-                         f"Month: {self.month}, Metric: {metric}, Type: Time Series")
-        self.fig.text(0.5, 0.04, metadata_text, ha='center', fontsize=10, style='italic')
+        # metadata_text = (f"Variable: {self.variable}, Experiment: {self.experiment}, "
+        #                  f"Month: {self.month}, Metric: {metric}, Type: Time Series")
+        # self.fig.text(0.5, 0.04, metadata_text, ha='center', fontsize=10, style='italic')
 
         # Adjust layout to accommodate text at bottom
         self.fig.tight_layout(rect=(0, 0.05, 1, 0.95))
@@ -396,7 +416,7 @@ class ExtremeStatisticsPlotter(BasePlotter):
         heatmap_df = pd.DataFrame(heatmap_data, index=month_names, columns=years)
 
         # Create figure with explicitly larger bottom margin
-        plt.figure(figsize=(14, 10))
+        plt.figure(figsize=(13, 8))
 
         # Get metric metadata from first available dataset
         sample_ds = all_months_data[first_month]
@@ -411,20 +431,43 @@ class ExtremeStatisticsPlotter(BasePlotter):
         cmap = self.get_colormap_for_heatmap()
 
         # Create axes with specific size to leave room for text at bottom
-        ax = plt.axes((0.05, 0.15, 0.95, 0.7))
+        ax = plt.axes((0.05, 0.12, 0.95, 0.72))
 
         # Draw heatmap with seaborn
-        sns.heatmap(
+        heatmap = sns.heatmap(
             heatmap_df,
             cmap=cmap,
             ax=ax,
-            cbar_kws={'label': f'{metric_long_name} ({metric_units})'}
+            linewidths=0.3,  # Add thin lines between cells
+            linecolor='white',  # Make the lines white
+            cbar_kws={
+                'label': f'{metric_long_name} ({metric_units})',
+                'pad': 0.05  # Space between colorbar and heatmap
+            }
         )
+
+        # Add box around the heatmap
+        for spine in ax.spines.values():
+            spine.set_visible(True)
+            spine.set_color('black')
+            spine.set_linewidth(1.0)
+
+        # Add contour to colorbar
+        cbar = heatmap.collections[0].colorbar
+        cbar.outline.set_linewidth(1.0)
+        cbar.outline.set_edgecolor('black')
+
+        # Position for asterisks - outside the heatmap in the margin
+        asterisk_x_pos = len(years) + 0.9
 
         # Configure x-axis (years) ticks - show every 5 years
         x_tick_indices = np.arange(0, len(years), 5)
         ax.set_xticks(x_tick_indices)
         ax.set_xticklabels([str(years[i]) for i in x_tick_indices], rotation=45)
+
+        # Add axis labels
+        ax.set_xlabel('Year', fontsize=12)
+        ax.set_ylabel('Month', fontsize=12)
 
         # Add annotations for significant trends
         for i, month in enumerate(months):
@@ -440,8 +483,8 @@ class ExtremeStatisticsPlotter(BasePlotter):
 
                     # Check if metric has significant trend
                     if metric in stats and stats[metric]['significant']:
-                        # Add a marker on the right side of the heatmap cell
-                        ax.text(len(years) - 0.5, i + 0.5, '*',
+                        # Add asterisk in margin between heatmap and colorbar
+                        ax.text(asterisk_x_pos, i + 0.5, '*',
                                 color='black', fontsize=14,
                                 ha='center', va='center',
                                 fontweight='bold')
@@ -451,18 +494,28 @@ class ExtremeStatisticsPlotter(BasePlotter):
 
         # Add title
         title = f"{metric_long_name} by Month - {self.experiment.upper()}"
-        subtitle = f"Location: {self.latitude:.2f}°, {self.longitude:.2f}°"
-        plt.suptitle(title, fontsize=16, y=0.95)
-        plt.title(subtitle, fontsize=12, style='italic')
+
+        # Convert coordinates to cardinal format
+        lat_dir = "N" if self.latitude >= 0 else "S"
+        lat_val = abs(self.latitude)
+
+        # Handle longitude conversion
+        adj_lon = self.longitude if self.longitude <= 180 else self.longitude - 360
+        lon_dir = "E" if adj_lon >= 0 else "W"
+        lon_val = abs(adj_lon)
+
+        subtitle = f"Location: {lat_val:.2f}°{lat_dir}, {lon_val:.2f}°{lon_dir}"
+        plt.suptitle(title, fontsize=16, y=0.95, x=0.43)
+        plt.title(subtitle, fontsize=12, style='italic', y=1.05)
 
         # Add metadata text at the bottom
-        metadata_text = (f"Variable: {self.variable}, Experiment: {self.experiment}, "
-                         f"Metric: {metric}, Type: Heatmap")
-        plt.figtext(0.45, 0.06, metadata_text, ha='center', fontsize=10, style='italic')
+        # metadata_text = (f"Variable: {self.variable}, Experiment: {self.experiment}, "
+        #                  f"Metric: {metric}, Type: Heatmap")
+        # plt.figtext(0.45, 0.05, metadata_text, ha='center', fontsize=10, style='italic')
 
         # Add asterisk explanation
         asterisk_text = "* Significant trend (p<0.05, Mann-Kendall test)"
-        plt.figtext(0.92, 0.08, asterisk_text, ha='right', fontsize=8, style='italic')
+        plt.figtext(0.92, 0.04, asterisk_text, ha='right', fontsize=10, style='italic')
 
         # Store the figure in self.fig for compatibility with BasePlotter
         self.fig = plt.gcf()

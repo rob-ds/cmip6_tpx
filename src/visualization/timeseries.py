@@ -71,7 +71,10 @@ class TimeSeriesPlotter(BasePlotter):
         ax_top.axhline(y=0, color='black', linestyle='-', linewidth=0.8, alpha=0.5)
 
         # Add labels and legend
-        ax_top.set_ylabel('Standardized Anomaly', fontsize=12)
+        if self.variable == 'temperature':
+            ax_top.set_ylabel('Temperature Anomaly (°C)', fontsize=12)
+        else:
+            ax_top.set_ylabel('Standardized Anomaly', fontsize=12)
         ax_top.set_title(f'Multi-scale Decomposition of {self.variable.capitalize()} Anomalies',
                          fontsize=14)
 
@@ -94,11 +97,11 @@ class TimeSeriesPlotter(BasePlotter):
 
         # Place text box in top right
         ax_top.text(0.97, 0.97, stats_text, transform=ax_top.transAxes,
-                    fontsize=10, verticalalignment='top', horizontalalignment='right',
-                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+                    fontsize=12, verticalalignment='top', horizontalalignment='right',
+                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.5))
 
         # Add legend
-        self.add_legend(ax=ax_top)
+        self.add_legend(ax=ax_top, loc='upper left')
 
         # Plot bottom panel: Variability trend
         ax_bottom = self.axes[1]
@@ -114,21 +117,45 @@ class TimeSeriesPlotter(BasePlotter):
         hist_ref = self.data.variability_trend.attrs.get('historical_reference', 'N/A')
         window_size = self.data.attrs.get('window_size', 'N/A')
 
+        # Add box around both plots with solid black lines
+        for ax in self.axes:
+            for spine in ax.spines.values():
+                spine.set_visible(True)
+                spine.set_color('black')
+                spine.set_linewidth(1.0)
+
+            # Make sure grid is behind data
+            ax.set_axisbelow(True)
+
         # Add labels and title
         ax_bottom.set_xlabel('Year', fontsize=12)
-        ax_bottom.set_ylabel('Standardized Variability', fontsize=12)
+        if self.variable == 'temperature':
+            ax_bottom.set_ylabel('Temperature Variability (°C)', fontsize=12)
+        else:
+            ax_bottom.set_ylabel('Standardized Variability', fontsize=12)
         ax_bottom.set_title(f'Trend of Interannual Variability (Window Size: {window_size} Years)',
                             fontsize=14)
 
         # Add reference value text
         ref_text = f"Historical Reference: {hist_ref:.5f}"
         ax_bottom.text(0.03, 0.97, ref_text, transform=ax_bottom.transAxes,
-                       fontsize=10, verticalalignment='top', horizontalalignment='left',
+                       fontsize=12, verticalalignment='top', horizontalalignment='left',
                        bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
 
         # Add overall title
         title = f"{self.variable.capitalize()} Variability Analysis - {self.experiment.upper()}"
-        subtitle = f"Month: {self._get_month_name(self.month)}, Location: {self.latitude:.2f}°, {self.longitude:.2f}°"
+
+        # Convert coordinates to cardinal format
+        lat_dir = "N" if self.latitude >= 0 else "S"
+        lat_val = abs(self.latitude)
+
+        # Handle longitude conversion (values >180 should be converted to negative/western values)
+        adj_lon = self.longitude if self.longitude <= 180 else self.longitude - 360
+        lon_dir = "E" if adj_lon >= 0 else "W"
+        lon_val = abs(adj_lon)
+
+        subtitle = (f"Month: {self._get_month_name(self.month)}, "
+                    f"Location: {lat_val:.2f}°{lat_dir}, {lon_val:.2f}°{lon_dir}")
         self.add_title(title, subtitle)
 
         # Adjust layout

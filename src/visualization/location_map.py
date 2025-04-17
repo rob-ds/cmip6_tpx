@@ -57,8 +57,9 @@ class LocationMapPlotter(BasePlotter):
 
         logger.info(f"Creating location map for coordinates: {latitude}, {longitude}")
 
-        # Setup figure with cartopy projection
+        # Setup figure with cartopy projection and adjusted layout
         fig = plt.figure(figsize=(10, 8))
+        plt.subplots_adjust(left=-0.15, right=0.9)  # Adjust horizontal positioning
 
         # Create main map with Plate Carree projection
         ax_main = fig.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
@@ -68,8 +69,8 @@ class LocationMapPlotter(BasePlotter):
                             latitude - buffer, latitude + buffer], crs=ccrs.PlateCarree())
 
         # Add country borders and coastlines
-        ax_main.add_feature(cfeature.BORDERS, linestyle=':', linewidth=1)
-        ax_main.add_feature(cfeature.COASTLINE, linewidth=1)
+        ax_main.add_feature(cfeature.BORDERS, linestyle='-', linewidth=1, edgecolor='gray')
+        ax_main.add_feature(cfeature.COASTLINE, linewidth=1.5)
 
         # Add grid lines
         gl = ax_main.gridlines(draw_labels=True, linewidth=0.5, color='gray', alpha=0.5, linestyle='--')
@@ -96,12 +97,22 @@ class LocationMapPlotter(BasePlotter):
 
         # Add inset world map if requested
         if show_inset:
-            # Create inset map
-            ax_inset = plt.axes((0.75, 0.1, 0.2, 0.2), projection=ccrs.Robinson())
+            # Create larger inset map
+            ax_inset = plt.axes((0.5, 0.08, 0.3, 0.3), projection=ccrs.PlateCarree())
+
+            # Show a much wider area in the inset
+            wider_buffer = 25.0
+            ax_inset.set_extent([longitude - wider_buffer, longitude + wider_buffer,
+                                 latitude - wider_buffer, latitude + wider_buffer],
+                                crs=ccrs.PlateCarree())
 
             # Add coastlines to inset
             ax_inset.add_feature(cfeature.COASTLINE, linewidth=0.5)
-            ax_inset.add_feature(cfeature.BORDERS, linestyle=':', linewidth=0.5)
+            # Solid light grey borders instead of dashed
+            ax_inset.add_feature(cfeature.BORDERS, linestyle='-', linewidth=0.5, edgecolor='gray')
+
+            # Add gridlines without storing in unused variable
+            ax_inset.gridlines(draw_labels=False, linewidth=0.3, color='gray', alpha=0.5, linestyle=':')
 
             # Plot point on inset map
             ax_inset.plot(longitude, latitude, 'o', markersize=5, color='red',
@@ -122,8 +133,8 @@ class LocationMapPlotter(BasePlotter):
         title = f"Study Location"
         subtitle = f"Variable: {self.variable.capitalize()}, Scenario: {self.experiment.upper()}"
 
-        plt.suptitle(title, fontsize=16, weight='bold')
-        plt.figtext(0.5, 0.92, subtitle, ha='center', fontsize=12, style='italic')
+        plt.suptitle(title, fontsize=16, weight='bold', x=0.28, ha='left')
+        plt.figtext(0.37, 0.92, subtitle, ha='center', fontsize=12, style='italic')
 
         # Store figure
         self.fig = fig
