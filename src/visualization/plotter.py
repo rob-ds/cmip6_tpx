@@ -97,6 +97,7 @@ class BasePlotter:
             output_dir: Union[str, Path],
             metric: Optional[str] = None,
             color_scheme: Optional[str] = None,
+            model: str = "ec_earth3_cc",  # Add model parameter with default
             dpi: int = 300,
             figsize: Tuple[float, float] = (10, 8)
     ):
@@ -111,6 +112,7 @@ class BasePlotter:
             output_dir: Directory to store output figures
             metric: Specific metric to analyze (if None, uses a default based on variable)
             color_scheme: Color scheme to use (if None, uses default based on metric)
+            model: CMIP6 model to use (default: ec_earth3_cc for backward compatibility)
             dpi: Resolution for saved figures
             figsize: Default figure size (width, height) in inches
         """
@@ -121,6 +123,7 @@ class BasePlotter:
         self.output_dir = Path(output_dir)
         self.metric = metric
         self.color_scheme = color_scheme
+        self.model = model  # Add this line to store model
         self.dpi = dpi
         self.figsize = figsize
 
@@ -221,6 +224,54 @@ class BasePlotter:
         # Otherwise use default for the category
         return self.DEFAULT_COLOR_SCHEMES.get(category, {}).get('colormap', 'viridis')
 
+    @staticmethod
+    def _format_coordinate(value: float, prefix: str = "") -> str:
+        """
+        Format a coordinate value for use in filenames.
+        """
+        formatted = f"{value:.2f}".replace('.', 'p').replace('-', 'n')
+        if prefix:
+            return f"{prefix}{formatted}"
+        return formatted
+
+    def _find_file(self, directory: Path, name_pattern: str) -> Path:
+        """
+        Find a file in the specified directory that matches the name pattern.
+
+        Args:
+            directory: Directory to search in
+            name_pattern: Pattern to match in the file name
+
+        Returns:
+            Path to the found file
+
+        Raises:
+            FileNotFoundError: If no matching file is found
+        """
+        matching_files = []
+
+        for file_path in directory.glob("*.nc"):
+            if name_pattern in file_path.name:
+                # If we have latitude and longitude, try to match more specifically
+                if self.latitude is not None and self.longitude is not None:
+                    lat_str = self._format_coordinate(self.latitude, "lat")
+                    lon_str = self._format_coordinate(self.longitude, "lon")
+
+                    # If file contains the specific coordinate, prioritize it
+                    if lat_str in file_path.name and lon_str in file_path.name:
+                        logger.debug(f"Found exact coordinate match: {file_path}")
+                        return file_path
+
+                matching_files.append(file_path)
+
+        if not matching_files:
+            raise FileNotFoundError(f"No file matching '{name_pattern}' found in {directory}")
+
+        # If multiple files match but none with exact coordinates, select the most recent one
+        newest_file = sorted(matching_files, key=lambda p: p.stat().st_mtime, reverse=True)[0]
+        logger.debug(f"Selected newest matching file: {newest_file}")
+        return newest_file
+
     def load_data(self, data_type: str = 'anomalies', months: List[int] = None) -> None:
         """
         Load data from NetCDF file.
@@ -232,34 +283,63 @@ class BasePlotter:
         # Default to current month if months not specified
         months = months or [self.month]
 
-        # For anomalies, keep the original loading logic
+        # For anomalies, load with model and coordinate awareness
         if data_type == 'anomalies':
             data_dir = self.input_dir / 'processed' / data_type
-            file_name = f"{self.variable}_{self.experiment}_month{self.month:02d}_lat38p25_lon0p00.nc"
-            file_path = data_dir / file_name
+
+            # New format with model in filename
+            file_pattern = f"{self.variable}_{self.model}_{self.experiment}_month{self.month:02d}"
+
+            # Legacy format (fallback)
+            legacy_pattern = f"{self.variable}_{self.experiment}_month{self.month:02d}"
+
+            # Try to find file with pattern matching
+            try:
+                file_path = self._find_file(data_dir, file_pattern)
+                logger.info(f"Found anomalies file with new pattern: {file_path}")
+            except FileNotFoundError:
+                # Try legacy format
+                try:
+                    file_path = self._find_file(data_dir, legacy_pattern)
+                    logger.info(f"Found anomalies file with legacy pattern: {file_path}")
+                except FileNotFoundError:
+                    raise FileNotFoundError(
+                        f"No anomalies data found for {self.variable}, {self.experiment}, "
+                        f"month {self.month}, model {self.model}")
 
             logger.info(f"Loading anomalies data from {file_path}")
-
-            if not file_path.exists():
-                raise FileNotFoundError(f"Data file not found: {file_path}")
 
             self.data = xr.open_dataset(file_path, decode_timedelta=True)
             self.is_data_loaded = True
 
-        # For extremes, use the new combined file format
+        # For extremes, use the new combined file format with model awareness
         elif data_type == 'extremes':
             # Load data for all requested months
             monthly_datasets = {}
 
             for month in months:
                 data_dir = self.input_dir / 'processed' / data_type
-                file_name = f"extremes_{self.experiment}_month{month:02d}.nc"
-                file_path = data_dir / file_name
+
+                # New format with model in filename
+                file_pattern = f"extremes_{self.model}_{self.experiment}_month{month:02d}"
+
+                # Legacy format (fallback)
+                legacy_pattern = f"extremes_{self.experiment}_month{month:02d}"
+
+                # Try to find file with pattern matching
+                try:
+                    file_path = self._find_file(data_dir, file_pattern)
+                    logger.info(f"Found extremes file with new pattern: {file_path}")
+                except FileNotFoundError:
+                    # Try legacy format
+                    try:
+                        file_path = self._find_file(data_dir, legacy_pattern)
+                        logger.info(f"Found extremes file with legacy pattern: {file_path}")
+                    except FileNotFoundError:
+                        raise FileNotFoundError(
+                            f"No extremes data found for {self.experiment}, month {month}, model {self.model}")
 
                 logger.info(f"Loading extremes data for month {month} from {file_path}")
-
-                if not file_path.exists():
-                    raise FileNotFoundError(f"Data file not found: {file_path}")
 
                 ds = xr.open_dataset(file_path, decode_timedelta=True)
                 monthly_datasets[month] = ds

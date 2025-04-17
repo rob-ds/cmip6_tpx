@@ -80,7 +80,8 @@ class BaseAnalyzer(ABC):
 
         logger.info(f"Initialized {self.__class__.__name__} for {variable}, {experiment}, month {month}, model {model}")
 
-    def _format_coordinate(self, value: float, prefix: str = "") -> str:
+    @staticmethod
+    def _format_coordinate(value: float, prefix: str = "") -> str:
         """
         Format a coordinate value for use in filenames.
 
@@ -96,7 +97,8 @@ class BaseAnalyzer(ABC):
             return f"{prefix}{formatted}"
         return formatted
 
-    def _find_center_indices(self, latitude_array, longitude_array) -> Tuple[int, int]:
+    @staticmethod
+    def _find_center_indices(latitude_array, longitude_array) -> Tuple[int, int]:
         """
         Find the center indices for latitude and longitude dimensions.
 
@@ -117,7 +119,8 @@ class BaseAnalyzer(ABC):
 
         return lat_center_idx, lon_center_idx
 
-    def _extract_variable_at_center(self, dataset, variable_name, lat_idx, lon_idx) -> np.ndarray:
+    @staticmethod
+    def _extract_variable_at_center(dataset, variable_name, lat_idx, lon_idx) -> np.ndarray:
         """
         Extract variable values at the center point from a dataset.
 

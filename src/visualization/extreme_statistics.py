@@ -11,6 +11,7 @@ import calendar
 import matplotlib.pyplot as plt
 import numpy as np
 import pymannkendall as mk
+import seaborn as sns
 
 from .plotter import BasePlotter
 
@@ -234,8 +235,11 @@ class ExtremeStatisticsPlotter(BasePlotter):
             # If conversion fails, just proceed with original values
             pass
 
-        # Plot the data points
-        ax = self.axes[0]
+        # Get first subplot axes and ensure it's a proper Axes object
+        ax = self.axes.flat[0] if hasattr(self.axes, 'flat') else self.axes[0]
+        if not isinstance(ax, plt.Axes):
+            raise TypeError("Expected matplotlib.axes.Axes object")
+        ax: plt.Axes  # Type hint to indicate ax is a Matplotlib Axes object
         ax.plot(years, metric_data, marker='o', markersize=7,
                 color=color, linewidth=1.5,
                 markerfacecolor=color, markeredgecolor='white',
@@ -298,13 +302,13 @@ class ExtremeStatisticsPlotter(BasePlotter):
         self.fig.text(0.5, 0.04, metadata_text, ha='center', fontsize=10, style='italic')
 
         # Adjust layout to accommodate text at bottom
-        self.fig.tight_layout(rect=[0, 0.05, 1, 0.95])  # Increase bottom margin
+        self.fig.tight_layout(rect=(0, 0.05, 1, 0.95))
 
         return self.fig
 
     def create_metric_heatmap(self, metric: str = None, months: List[int] = None) -> plt.Figure:
         """
-        Create a heatmap of a metric by month and year.
+        Create a heatmap of a metric by month and year using seaborn.
 
         Args:
             metric: Specific metric to visualize (if None, uses self.metric)
@@ -386,9 +390,13 @@ class ExtremeStatisticsPlotter(BasePlotter):
                 else:
                     logger.warning(f"Metric {metric} not found in data for month {month}")
 
-        # Create figure
-        self.setup_figure(figsize=(14, 8))
-        ax = self.axes[0]
+        # Create pandas DataFrame for better seaborn integration
+        import pandas as pd
+        month_names = [calendar.month_abbr[m] for m in months]
+        heatmap_df = pd.DataFrame(heatmap_data, index=month_names, columns=years)
+
+        # Create figure with explicitly larger bottom margin
+        plt.figure(figsize=(14, 10))
 
         # Get metric metadata from first available dataset
         sample_ds = all_months_data[first_month]
@@ -399,28 +407,24 @@ class ExtremeStatisticsPlotter(BasePlotter):
             metric_long_name = metric
             metric_units = ''
 
-        # Create heatmap
+        # Set the colormap
         cmap = self.get_colormap_for_heatmap()
-        im = ax.imshow(heatmap_data, aspect='auto', cmap=cmap,
-                       interpolation='nearest', origin='lower')
 
-        # Define x-axis (years) and y-axis (months) ticks
-        # Show every 5 years on x-axis
+        # Create axes with specific size to leave room for text at bottom
+        ax = plt.axes((0.05, 0.15, 0.95, 0.7))
+
+        # Draw heatmap with seaborn
+        sns.heatmap(
+            heatmap_df,
+            cmap=cmap,
+            ax=ax,
+            cbar_kws={'label': f'{metric_long_name} ({metric_units})'}
+        )
+
+        # Configure x-axis (years) ticks - show every 5 years
         x_tick_indices = np.arange(0, len(years), 5)
         ax.set_xticks(x_tick_indices)
         ax.set_xticklabels([str(years[i]) for i in x_tick_indices], rotation=45)
-
-        # Month names on y-axis
-        month_names = [calendar.month_abbr[m] for m in range(1, 13)]
-
-        # Use only available months for y labels
-        y_tick_indices = np.arange(len(months))
-        ax.set_yticks(y_tick_indices)
-        ax.set_yticklabels([month_names[m - 1] for m in months])
-
-        # Add colorbar
-        cbar = self.fig.colorbar(im, ax=ax)
-        cbar.set_label(f'{metric_long_name} ({metric_units})')
 
         # Add annotations for significant trends
         for i, month in enumerate(months):
@@ -436,11 +440,11 @@ class ExtremeStatisticsPlotter(BasePlotter):
 
                     # Check if metric has significant trend
                     if metric in stats and stats[metric]['significant']:
-                        # Add a marker at the bottom of the heatmap cell
-                        x_center = len(years) - 1  # Last year
-                        y_center = i
-                        ax.text(x_center, y_center, '*', color='black',
-                                fontsize=14, ha='center', va='center')
+                        # Add a marker on the right side of the heatmap cell
+                        ax.text(len(years) - 0.5, i + 0.5, '*',
+                                color='black', fontsize=14,
+                                ha='center', va='center',
+                                fontweight='bold')
 
                     # Reset month
                     self.month = original_month
@@ -448,14 +452,20 @@ class ExtremeStatisticsPlotter(BasePlotter):
         # Add title
         title = f"{metric_long_name} by Month - {self.experiment.upper()}"
         subtitle = f"Location: {self.latitude:.2f}°, {self.longitude:.2f}°"
-        self.add_title(title, subtitle)
+        plt.suptitle(title, fontsize=16, y=0.95)
+        plt.title(subtitle, fontsize=12, style='italic')
+
+        # Add metadata text at the bottom
+        metadata_text = (f"Variable: {self.variable}, Experiment: {self.experiment}, "
+                         f"Metric: {metric}, Type: Heatmap")
+        plt.figtext(0.45, 0.06, metadata_text, ha='center', fontsize=10, style='italic')
 
         # Add asterisk explanation
         asterisk_text = "* Significant trend (p<0.05, Mann-Kendall test)"
-        self.fig.text(0.98, 0.02, asterisk_text, ha='right', fontsize=9,
-                      style='italic')
+        plt.figtext(0.92, 0.08, asterisk_text, ha='right', fontsize=8, style='italic')
 
-        # Adjust layout
-        plt.subplots_adjust(top=0.90, bottom=0.1)
+        # Store the figure in self.fig for compatibility with BasePlotter
+        self.fig = plt.gcf()
+        self.axes = np.array([ax])
 
         return self.fig

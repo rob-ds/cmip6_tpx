@@ -12,6 +12,7 @@ Workflow:
 - Select visualization type with --viz-type
 - Specify base variable (temperature/precipitation) with --variable
 - Choose experiment scenario (ssp245/ssp585) with --experiment
+- Select CMIP6 model with --model
 - For time series: specify month (--month) and metric (--metric)
 - For heatmaps: specify metric (--metric) and optional month selection (--months)
 - Optionally override colors with --color-scheme
@@ -20,36 +21,36 @@ Workflow:
 Example usage:
     # Temperature examples
     # Anomaly decomposition
-    python generate_plots.py --viz-type anomaly --variable temperature --experiment ssp245 --month 7
+    python generate_plots.py --viz-type anomaly --variable temperature --experiment ssp245 --month 7 --model ec_earth3_cc
 
     # Time series for temperature metric
-    python generate_plots.py --viz-type timeseries --variable temperature --experiment ssp585 --month 7 --metric warm_spell_days
+    python generate_plots.py --viz-type timeseries --variable temperature --experiment ssp585 --month 7 --metric warm_spell_days --model noresm2_mm
 
     # Paired time series with consistent y-axis range (generates both SSP245 and SSP585 plots)
-    python generate_plots.py --viz-type timeseries --variable temperature --month 7 --metric tm_max --consistent-range
+    python generate_plots.py --viz-type timeseries --variable temperature --month 7 --metric tm_max --consistent-range --model hadgem3_gc31_ll
 
     # Heatmap for temperature metric across summer months
-    python generate_plots.py --viz-type heatmap --variable temperature --experiment ssp585 --metric tm90p --months 6-8
+    python generate_plots.py --viz-type heatmap --variable temperature --experiment ssp585 --metric tm90p --months 6-8 --model ec_earth3_cc
 
     # Precipitation examples
     # Time series for precipitation metric
-    python generate_plots.py --viz-type timeseries --variable precipitation --experiment ssp245 --month 1 --metric rx1day
+    python generate_plots.py --viz-type timeseries --variable precipitation --experiment ssp245 --month 1 --metric rx1day --model ec_earth3_cc
 
     # Paired time series with consistent y-axis (for direct scenario comparison)
-    python generate_plots.py --viz-type timeseries --variable precipitation --month 10 --metric rx1day --consistent-range
+    python generate_plots.py --viz-type timeseries --variable precipitation --month 10 --metric rx1day --consistent-range --model hadgem3_gc31_ll
 
     # Heatmap for precipitation metric across all months
-    python generate_plots.py --viz-type heatmap --variable precipitation --experiment ssp585 --metric r95p --months all
+    python generate_plots.py --viz-type heatmap --variable precipitation --experiment ssp585 --metric r95p --months all --model noresm2_mm
 
     # Compound metric examples
     # Time series for compound temperature-precipitation metric
-    python generate_plots.py --viz-type timeseries --variable temperature --experiment ssp585 --month 8 --metric hot_dry_frequency
+    python generate_plots.py --viz-type timeseries --variable temperature --experiment ssp585 --month 8 --metric hot_dry_frequency --model ec_earth3_cc
 
     # Heatmap for compound metric with custom color scheme
-    python generate_plots.py --viz-type heatmap --variable temperature --experiment ssp585 --metric hot_wet_frequency --months all --color-scheme purples
+    python generate_plots.py --viz-type heatmap --variable temperature --experiment ssp585 --metric hot_wet_frequency --months all --color-scheme purples --model hadgem3_gc31_ll
 
     # Location map
-    python generate_plots.py --viz-type location --variable temperature --experiment ssp245 --month 7
+    python generate_plots.py --viz-type location --variable temperature --experiment ssp245 --month 7 --model ec_earth3_cc
 """
 
 import sys
@@ -64,6 +65,7 @@ from src.visualization.timeseries import TimeSeriesPlotter
 from src.visualization.extreme_statistics import ExtremeStatisticsPlotter
 from src.visualization.location_map import LocationMapPlotter
 from src.visualization.export import export_figure
+from src.data.retrieval import MODELS  # Import available models
 
 # Add project root to path for importing project modules
 project_root = Path(__file__).resolve().parents[1]
@@ -145,7 +147,7 @@ def parse_months_argument(months_str: str) -> List[int]:
         raise ValueError(f"Invalid month format: {months_str}")
 
 
-def generate_paired_metric_timeseries(variable, metric, month, input_dir, output_dir,
+def generate_paired_metric_timeseries(variable, metric, month, model, input_dir, output_dir,
                                       color_scheme=None, formats=None, dpi=300, figsize=(12, 10)):
     """
     Generate time series plots for both SSP245 and SSP585 scenarios with consistent y-axis.
@@ -154,6 +156,7 @@ def generate_paired_metric_timeseries(variable, metric, month, input_dir, output
         variable: Climate variable to analyze
         metric: Specific metric to visualize
         month: Month to analyze (1-12)
+        model: CMIP6 model to use
         input_dir: Directory containing input data
         output_dir: Directory to store output figures
         color_scheme: Color scheme to use
@@ -161,7 +164,8 @@ def generate_paired_metric_timeseries(variable, metric, month, input_dir, output
         dpi: Resolution for raster formats
         figsize: Figure size (width, height) in inches
     """
-    logger.info(f"Generating paired time series plots for {metric}, month {month} with consistent y-axis")
+    logger.info(
+        f"Generating paired time series plots for {metric}, month {month}, model {model} with consistent y-axis")
 
     # Create temporary plotters to load data for both scenarios
     temp_plotter_ssp245 = ExtremeStatisticsPlotter(
@@ -170,6 +174,7 @@ def generate_paired_metric_timeseries(variable, metric, month, input_dir, output
         month=month,
         input_dir=input_dir,
         output_dir=output_dir,
+        model=model,
         metric=metric,
         color_scheme=color_scheme,
         dpi=dpi,
@@ -182,6 +187,7 @@ def generate_paired_metric_timeseries(variable, metric, month, input_dir, output
         month=month,
         input_dir=input_dir,
         output_dir=output_dir,
+        model=model,
         metric=metric,
         color_scheme=color_scheme,
         dpi=dpi,
@@ -236,6 +242,7 @@ def generate_paired_metric_timeseries(variable, metric, month, input_dir, output
             month=month,
             input_dir=input_dir,
             output_dir=output_dir,
+            model=model,
             metric=metric,
             color_scheme=color_scheme,
             dpi=dpi,
@@ -253,12 +260,13 @@ def generate_paired_metric_timeseries(variable, metric, month, input_dir, output
             metric_name = metric
 
         # Export figure
-        filename = f"{variable}_{experiment}_month{month:02d}_{metric}_consistent_range"
+        filename = f"{variable}_{model}_{experiment}_month{month:02d}_{metric}_consistent_range"
         metadata = {
             "Variable": variable,
             "Experiment": experiment,
             "Month": str(month),
             "Metric": metric_name,
+            "Model": model,
             "Type": "Time Series (Consistent Range)"
         }
 
@@ -287,6 +295,10 @@ def main():
                         help="Base climate variable to analyze")
     parser.add_argument("--experiment", type=str, choices=["ssp245", "ssp585"],
                         help="Experiment to analyze")
+
+    # Add model selection
+    parser.add_argument("--model", type=str, required=True, choices=list(MODELS.keys()),
+                        help=f"CMIP6 model to use. Available models: {', '.join(MODELS.keys())}")
 
     # Visualization type selection
     parser.add_argument("--viz-type", type=str, required=True,
@@ -317,7 +329,7 @@ def main():
                         help="Custom input directory")
     parser.add_argument("--output-dir", type=str,
                         help="Custom output directory")
-    parser.add_argument("--formats", type=str, default="png,pdf",
+    parser.add_argument("--formats", type=str, default="png",
                         help="Comma-separated list of output formats")
     parser.add_argument("--dpi", type=int, default=300,
                         help="Resolution for raster formats")
@@ -352,6 +364,9 @@ def main():
         if not args.variable or not args.experiment or not args.month:
             parser.error("--viz-type location requires --variable, --experiment, and --month")
 
+    # Log model information
+    logger.info(f"Using CMIP6 model: {args.model} ({MODELS[args.model]})")
+
     # Determine project root directory
     project_dir = Path(__file__).resolve().parents[1]
 
@@ -380,6 +395,7 @@ def main():
             variable=args.variable,
             experiment=args.experiment,
             month=args.month,
+            model=args.model,
             input_dir=input_dir,
             output_dir=output_dir,
             formats=formats,
@@ -395,6 +411,7 @@ def main():
                 variable=args.variable,
                 metric=args.metric,
                 month=args.month,
+                model=args.model,
                 input_dir=input_dir,
                 output_dir=output_dir,
                 color_scheme=args.color_scheme,
@@ -409,6 +426,7 @@ def main():
                 experiment=args.experiment,
                 month=args.month,
                 metric=args.metric,
+                model=args.model,
                 input_dir=input_dir,
                 output_dir=output_dir,
                 color_scheme=args.color_scheme,
@@ -433,6 +451,7 @@ def main():
             experiment=args.experiment,
             metric=args.metric,
             months=months,
+            model=args.model,
             input_dir=input_dir,
             output_dir=output_dir,
             color_scheme=args.color_scheme,
@@ -446,6 +465,7 @@ def main():
             variable=args.variable,
             experiment=args.experiment,
             month=args.month,
+            model=args.model,
             input_dir=input_dir,
             output_dir=output_dir,
             formats=formats,
@@ -456,15 +476,16 @@ def main():
     logger.info("Plot generation completed")
 
 
-def generate_anomaly_plot(variable, experiment, month, input_dir, output_dir, formats, dpi, figsize):
+def generate_anomaly_plot(variable, experiment, month, model, input_dir, output_dir, formats, dpi, figsize):
     """Generate multi-scale anomaly decomposition plot."""
-    logger.info(f"Generating anomaly plot for {variable}, {experiment}, month {month}")
+    logger.info(f"Generating anomaly plot for {variable}, {experiment}, month {month}, model {model}")
 
     # Create plotter
     plotter = TimeSeriesPlotter(
         variable=variable,
         experiment=experiment,
         month=month,
+        model=model,
         input_dir=input_dir,
         output_dir=output_dir,
         dpi=dpi,
@@ -475,11 +496,12 @@ def generate_anomaly_plot(variable, experiment, month, input_dir, output_dir, fo
     fig = plotter.plot_anomaly_decomposition()
 
     # Export figure
-    filename = f"{variable}_{experiment}_month{month:02d}_anomaly_decomposition"
+    filename = f"{variable}_{model}_{experiment}_month{month:02d}_anomaly_decomposition"
     metadata = {
         "Variable": variable,
         "Experiment": experiment,
         "Month": str(month),
+        "Model": model,
         "Type": "Anomaly Decomposition"
     }
 
@@ -498,10 +520,10 @@ def generate_anomaly_plot(variable, experiment, month, input_dir, output_dir, fo
     logger.info(f"Anomaly plot saved to {output_dir}/{filename}")
 
 
-def generate_metric_timeseries(variable, experiment, month, metric, input_dir, output_dir,
+def generate_metric_timeseries(variable, experiment, month, metric, model, input_dir, output_dir,
                                color_scheme=None, formats=None, dpi=300, figsize=(12, 10)):
     """Generate time series plot for a specific metric."""
-    logger.info(f"Generating time series plot for {metric}, {experiment}, month {month}")
+    logger.info(f"Generating time series plot for {metric}, {experiment}, month {month}, model {model}")
 
     # Create plotter
     plotter = ExtremeStatisticsPlotter(
@@ -510,6 +532,7 @@ def generate_metric_timeseries(variable, experiment, month, metric, input_dir, o
         month=month,
         input_dir=input_dir,
         output_dir=output_dir,
+        model=model,
         metric=metric,
         color_scheme=color_scheme,
         dpi=dpi,
@@ -520,7 +543,7 @@ def generate_metric_timeseries(variable, experiment, month, metric, input_dir, o
     fig = plotter.plot_metric_time_series()
 
     # Export figure
-    filename = f"{variable}_{experiment}_month{month:02d}_{metric}_timeseries"
+    filename = f"{variable}_{model}_{experiment}_month{month:02d}_{metric}_timeseries"
 
     # Extract metric metadata if available
     plotter.load_data(data_type='extremes')
@@ -534,6 +557,7 @@ def generate_metric_timeseries(variable, experiment, month, metric, input_dir, o
         "Experiment": experiment,
         "Month": str(month),
         "Metric": metric_name,
+        "Model": model,
         "Type": "Time Series"
     }
 
@@ -552,10 +576,10 @@ def generate_metric_timeseries(variable, experiment, month, metric, input_dir, o
     logger.info(f"Time series plot saved to {output_dir}/{filename}")
 
 
-def generate_metric_heatmap(variable, experiment, metric, months, input_dir, output_dir,
+def generate_metric_heatmap(variable, experiment, metric, months, model, input_dir, output_dir,
                             color_scheme=None, formats=None, dpi=300, figsize=(14, 8)):
     """Generate heatmap for a specific metric across multiple months."""
-    logger.info(f"Generating heatmap for {metric}, {experiment}, months {months}")
+    logger.info(f"Generating heatmap for {metric}, {experiment}, months {months}, model {model}")
 
     # Create plotter with first month (will be updated for each month)
     plotter = ExtremeStatisticsPlotter(
@@ -564,6 +588,7 @@ def generate_metric_heatmap(variable, experiment, metric, months, input_dir, out
         month=months[0],  # Temporary, will load data for all months
         input_dir=input_dir,
         output_dir=output_dir,
+        model=model,
         metric=metric,
         color_scheme=color_scheme,
         dpi=dpi,
@@ -575,7 +600,7 @@ def generate_metric_heatmap(variable, experiment, metric, months, input_dir, out
 
     # Export figure
     month_str = "all" if len(months) == 12 else f"months{'_'.join([str(m) for m in months])}"
-    filename = f"{variable}_{experiment}_{metric}_{month_str}_heatmap"
+    filename = f"{variable}_{model}_{experiment}_{metric}_{month_str}_heatmap"
 
     # Extract metric metadata if available
     plotter.load_data(data_type='extremes')
@@ -589,6 +614,7 @@ def generate_metric_heatmap(variable, experiment, metric, months, input_dir, out
         "Experiment": experiment,
         "Months": ",".join(str(m) for m in months),
         "Metric": metric_name,
+        "Model": model,
         "Type": "Heatmap"
     }
 
@@ -607,15 +633,16 @@ def generate_metric_heatmap(variable, experiment, metric, months, input_dir, out
     logger.info(f"Heatmap saved to {output_dir}/{filename}")
 
 
-def generate_location_plot(variable, experiment, month, input_dir, output_dir, formats, dpi, figsize):
+def generate_location_plot(variable, experiment, month, model, input_dir, output_dir, formats, dpi, figsize):
     """Generate location map."""
-    logger.info(f"Generating location map for {variable}, {experiment}, month {month}")
+    logger.info(f"Generating location map for {variable}, {experiment}, month {month}, model {model}")
 
     # Create plotter
     plotter = LocationMapPlotter(
         variable=variable,
         experiment=experiment,
         month=month,
+        model=model,
         input_dir=input_dir,
         output_dir=output_dir,
         dpi=dpi,
@@ -626,12 +653,13 @@ def generate_location_plot(variable, experiment, month, input_dir, output_dir, f
     fig = plotter.plot_location_map()
 
     # Export figure
-    filename = f"{variable}_{experiment}_location_map"
+    filename = f"{variable}_{model}_{experiment}_location_map"
 
     # Get lat/lon from plotter
     metadata = {
         "Variable": variable,
         "Experiment": experiment,
+        "Model": model,
         "Latitude": f"{plotter.latitude:.4f}",
         "Longitude": f"{plotter.longitude:.4f}",
         "Type": "Location Map"

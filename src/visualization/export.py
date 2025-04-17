@@ -51,7 +51,7 @@ def export_figure(fig: plt.Figure,
 
     # Use default formats if none provided
     if formats is None:
-        formats = ['png', 'pdf']
+        formats = ['png', 'pdf', 'eps']
 
     # Save in all requested formats
     for fmt in formats:
