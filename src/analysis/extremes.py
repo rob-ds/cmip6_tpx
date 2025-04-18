@@ -127,53 +127,22 @@ class ExtremesAnalyzer(BaseAnalyzer):
         """
         Load historical and projection data for both temperature and precipitation.
         """
+        from src.utils.netcdf_utils import find_and_load_cmip6_data
+
         logger.info("Loading temperature and precipitation data")
 
-        # Load temperature data with new model-specific patterns
-        # New format with model pattern
-        temp_historical_pattern = f"cmip6_{self.model}_historical_temperature"
-        temp_projection_pattern = f"cmip6_{self.model}_{self.experiment}_temperature"
+        # Load temperature data
+        (temp_historical_ds, temp_projection_ds, self.lat, self.lon,
+         lat_center_idx, lon_center_idx) = find_and_load_cmip6_data(
+            self.input_dir,
+            'temperature',
+            self.experiment,
+            self.model,
+            logger,
+            coords=(self.lat, self.lon) if hasattr(self, 'lat') and self.lat is not None else None
+        )
 
-        # Legacy format (fallback)
-        legacy_temp_historical_pattern = "historical_temperature"
-        legacy_temp_projection_pattern = f"{self.experiment}_temperature"
-
-        # Try to find files with new format first, then fall back to legacy format
-        try:
-            historical_file = self._find_file(self.input_dir / "raw" / "historical", temp_historical_pattern)
-            logger.info(f"Found temperature historical data using new filename pattern: {historical_file}")
-        except FileNotFoundError:
-            # Try legacy format as fallback
-            historical_file = self._find_file(self.input_dir / "raw" / "historical", legacy_temp_historical_pattern)
-            logger.info(f"Found temperature historical data using legacy filename pattern: {historical_file}")
-
-        try:
-            projection_file = self._find_file(self.input_dir / "raw" / "projections", temp_projection_pattern)
-            logger.info(f"Found temperature projection data using new filename pattern: {projection_file}")
-        except FileNotFoundError:
-            # Try legacy format as fallback
-            projection_file = self._find_file(self.input_dir / "raw" / "projections", legacy_temp_projection_pattern)
-            logger.info(f"Found temperature projection data using legacy filename pattern: {projection_file}")
-
-        logger.info(f"Loading temperature historical data from {historical_file}")
-        logger.info(f"Loading temperature projection data from {projection_file}")
-
-        # Load datasets
-        temp_historical_ds = xr.open_dataset(historical_file)
-        temp_projection_ds = xr.open_dataset(projection_file)
-
-        # Find center indices for lat and lon dimensions
-        lat_center_idx, lon_center_idx = self._find_center_indices(temp_historical_ds.lat, temp_historical_ds.lon)
-
-        # Extract center point coordinates
-        self.lat = float(temp_historical_ds.lat[lat_center_idx].values)
-        self.lon = float(temp_historical_ds.lon[lon_center_idx].values)
-
-        logger.info(
-            f"Center point coordinates: lat={self.lat}, lon={self.lon} "
-            f"(from {len(temp_historical_ds.lat)}×{len(temp_historical_ds.lon)} grid)")
-
-        # Extract temperature data using helper method
+        # Extract temperature data
         temp_historical_var = self._extract_variable_at_center(temp_historical_ds, 'tas', lat_center_idx,
                                                                lon_center_idx)
         temp_projection_var = self._extract_variable_at_center(temp_projection_ds, 'tas', lat_center_idx,
@@ -185,48 +154,23 @@ class ExtremesAnalyzer(BaseAnalyzer):
             coords={'time': temp_historical_ds.time.values},
             dims=['time']
         )
-
         self.temperature_projection_data = xr.DataArray(
             data=temp_projection_var,
             coords={'time': temp_projection_ds.time.values},
             dims=['time']
         )
 
-        # Load precipitation data with model-specific patterns
-        # New format with model pattern
-        precip_historical_pattern = f"cmip6_{self.model}_historical_precipitation"
-        precip_projection_pattern = f"cmip6_{self.model}_{self.experiment}_precipitation"
+        # Load precipitation data (pass coordinates to avoid recalculation)
+        precip_historical_ds, precip_projection_ds, _, _, lat_center_idx, lon_center_idx = find_and_load_cmip6_data(
+            self.input_dir,
+            'precipitation',
+            self.experiment,
+            self.model,
+            logger,
+            coords=(self.lat, self.lon)
+        )
 
-        # Legacy format (fallback)
-        legacy_precip_historical_pattern = "historical_precipitation"
-        legacy_precip_projection_pattern = f"{self.experiment}_precipitation"
-
-        # Try to find files with new format first, then fall back to legacy format
-        try:
-            historical_file = self._find_file(self.input_dir / "raw" / "historical", precip_historical_pattern)
-            logger.info(f"Found precipitation historical data using new filename pattern: {historical_file}")
-        except FileNotFoundError:
-            # Try legacy format as fallback
-            historical_file = self._find_file(self.input_dir / "raw" / "historical", legacy_precip_historical_pattern)
-            logger.info(f"Found precipitation historical data using legacy filename pattern: {historical_file}")
-
-        try:
-            projection_file = self._find_file(self.input_dir / "raw" / "projections", precip_projection_pattern)
-            logger.info(f"Found precipitation projection data using new filename pattern: {projection_file}")
-        except FileNotFoundError:
-            # Try legacy format as fallback
-            projection_file = self._find_file(self.input_dir / "raw" / "projections", legacy_precip_projection_pattern)
-            logger.info(f"Found precipitation projection data using legacy filename pattern: {projection_file}")
-
-        logger.info(f"Loading precipitation historical data from {historical_file}")
-        logger.info(f"Loading precipitation projection data from {projection_file}")
-
-        # Load datasets
-        precip_historical_ds = xr.open_dataset(historical_file)
-        precip_projection_ds = xr.open_dataset(projection_file)
-
-        # Extract precipitation data with flexible coordinate logic
-        lat_center_idx, lon_center_idx = self._find_center_indices(precip_historical_ds.lat, precip_historical_ds.lon)
+        # Extract precipitation data
         precip_historical_var = self._extract_variable_at_center(precip_historical_ds, 'pr', lat_center_idx,
                                                                  lon_center_idx)
         precip_projection_var = self._extract_variable_at_center(precip_projection_ds, 'pr', lat_center_idx,
@@ -238,7 +182,6 @@ class ExtremesAnalyzer(BaseAnalyzer):
             coords={'time': precip_historical_ds.time.values},
             dims=['time']
         )
-
         self.precipitation_projection_data = xr.DataArray(
             data=precip_projection_var,
             coords={'time': precip_projection_ds.time.values},

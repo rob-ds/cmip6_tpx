@@ -304,16 +304,8 @@ class ExtremeStatisticsPlotter(BasePlotter):
         title = f"{metric_long_name} - {self.experiment.upper()}"
 
         # Convert coordinates to cardinal format
-        lat_dir = "N" if self.latitude >= 0 else "S"
-        lat_val = abs(self.latitude)
-
-        # Handle longitude conversion
-        adj_lon = self.longitude if self.longitude <= 180 else self.longitude - 360
-        lon_dir = "E" if adj_lon >= 0 else "W"
-        lon_val = abs(adj_lon)
-
-        subtitle = (f"Month: {self._get_month_name(self.month)}, "
-                    f"Location: {lat_val:.2f}°{lat_dir}, {lon_val:.2f}°{lon_dir}")
+        location_str = self.format_coordinates_cardinal()
+        subtitle = f"Month: {self._get_month_name(self.month)}, Location: {location_str}"
         self.add_title(title, subtitle)
 
         # Add description at the bottom
@@ -496,15 +488,8 @@ class ExtremeStatisticsPlotter(BasePlotter):
         title = f"{metric_long_name} by Month - {self.experiment.upper()}"
 
         # Convert coordinates to cardinal format
-        lat_dir = "N" if self.latitude >= 0 else "S"
-        lat_val = abs(self.latitude)
-
-        # Handle longitude conversion
-        adj_lon = self.longitude if self.longitude <= 180 else self.longitude - 360
-        lon_dir = "E" if adj_lon >= 0 else "W"
-        lon_val = abs(adj_lon)
-
-        subtitle = f"Location: {lat_val:.2f}°{lat_dir}, {lon_val:.2f}°{lon_dir}"
+        location_str = self.format_coordinates_cardinal()
+        subtitle = f"Location: {location_str}"
         plt.suptitle(title, fontsize=16, y=0.95, x=0.43)
         plt.title(subtitle, fontsize=12, style='italic', y=1.05)
 

@@ -146,16 +146,8 @@ class TimeSeriesPlotter(BasePlotter):
         title = f"{self.variable.capitalize()} Variability Analysis - {self.experiment.upper()}"
 
         # Convert coordinates to cardinal format
-        lat_dir = "N" if self.latitude >= 0 else "S"
-        lat_val = abs(self.latitude)
-
-        # Handle longitude conversion (values >180 should be converted to negative/western values)
-        adj_lon = self.longitude if self.longitude <= 180 else self.longitude - 360
-        lon_dir = "E" if adj_lon >= 0 else "W"
-        lon_val = abs(adj_lon)
-
-        subtitle = (f"Month: {self._get_month_name(self.month)}, "
-                    f"Location: {lat_val:.2f}°{lat_dir}, {lon_val:.2f}°{lon_dir}")
+        location_str = self.format_coordinates_cardinal()
+        subtitle = f"Month: {self._get_month_name(self.month)}, Location: {location_str}"
         self.add_title(title, subtitle)
 
         # Adjust layout

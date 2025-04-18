@@ -82,20 +82,9 @@ class BaseAnalyzer(ABC):
 
     @staticmethod
     def _format_coordinate(value: float, prefix: str = "") -> str:
-        """
-        Format a coordinate value for use in filenames.
-
-        Args:
-            value: Coordinate value (latitude or longitude)
-            prefix: Optional prefix to add (e.g., 'lat' or 'lon')
-
-        Returns:
-            Formatted coordinate string (e.g., 'lat38p25' for 38.25)
-        """
-        formatted = f"{value:.2f}".replace('.', 'p').replace('-', 'n')
-        if prefix:
-            return f"{prefix}{formatted}"
-        return formatted
+        """Format a coordinate value for use in filenames."""
+        from src.utils.netcdf_utils import format_coordinate
+        return format_coordinate(value, prefix)
 
     @staticmethod
     def _find_center_indices(latitude_array, longitude_array) -> Tuple[int, int]:
@@ -152,51 +141,17 @@ class BaseAnalyzer(ABC):
         This method loads the data from the input directory, extracts the center point
         from the 3x3 grid, and stores the results in the instance variables.
         """
-        # Construct file patterns - handle both new and legacy file formats
-        # New format with model and specific coordinates
-        historical_pattern = f"cmip6_{self.model}_historical_{self.variable}"
-        projection_pattern = f"cmip6_{self.model}_{self.experiment}_{self.variable}"
+        from src.utils.netcdf_utils import find_and_load_cmip6_data
 
-        # Legacy format (fallback)
-        legacy_historical_pattern = f"historical_{self.variable}"
-        legacy_projection_pattern = f"{self.experiment}_{self.variable}"
-
-        # Try to find files with new format first, then fall back to legacy format
-        try:
-            historical_file = self._find_file(self.input_dir / "raw" / "historical", historical_pattern)
-            logger.info(f"Found historical data using new filename pattern: {historical_file}")
-        except FileNotFoundError:
-            # Try legacy format as fallback
-            historical_file = self._find_file(self.input_dir / "raw" / "historical", legacy_historical_pattern)
-            logger.info(f"Found historical data using legacy filename pattern: {historical_file}")
-
-        try:
-            projection_file = self._find_file(self.input_dir / "raw" / "projections", projection_pattern)
-            logger.info(f"Found projection data using new filename pattern: {projection_file}")
-        except FileNotFoundError:
-            # Try legacy format as fallback
-            projection_file = self._find_file(self.input_dir / "raw" / "projections", legacy_projection_pattern)
-            logger.info(f"Found projection data using legacy filename pattern: {projection_file}")
-
-        logger.info(f"Loading historical data from {historical_file}")
-        logger.info(f"Loading projection data from {projection_file}")
-
-        # Load historical data
-        historical_ds = xr.open_dataset(historical_file)
-
-        # Load projection data
-        projection_ds = xr.open_dataset(projection_file)
-
-        # Find center indices for lat and lon dimensions
-        lat_center_idx, lon_center_idx = self._find_center_indices(historical_ds.lat, historical_ds.lon)
-
-        # Extract center point coordinates
-        self.lat = float(historical_ds.lat[lat_center_idx].values)
-        self.lon = float(historical_ds.lon[lon_center_idx].values)
-
-        logger.info(
-            f"Center point coordinates: lat={self.lat}, lon={self.lon} "
-            f"(from {len(historical_ds.lat)}×{len(historical_ds.lon)} grid)")
+        # Load dataset using utility function
+        historical_ds, projection_ds, self.lat, self.lon, lat_center_idx, lon_center_idx = find_and_load_cmip6_data(
+            self.input_dir,
+            self.variable,
+            self.experiment,
+            self.model,
+            logger,
+            coords=None  # Optional parameter
+        )
 
         # Extract center point data for the variable
         historical_var = self._extract_variable_at_center(historical_ds, self.nc_var_name, lat_center_idx,
@@ -242,29 +197,8 @@ class BaseAnalyzer(ABC):
         Raises:
             FileNotFoundError: If no matching file is found
         """
-        matching_files = []
-
-        for file_path in directory.glob("*.nc"):
-            if name_pattern in file_path.name:
-                # If we have latitude and longitude, try to match more specifically
-                if self.lat is not None and self.lon is not None:
-                    lat_str = self._format_coordinate(self.lat, "lat")
-                    lon_str = self._format_coordinate(self.lon, "lon")
-
-                    # If file contains the specific coordinate, prioritize it
-                    if lat_str in file_path.name and lon_str in file_path.name:
-                        logger.debug(f"Found exact coordinate match: {file_path}")
-                        return file_path
-
-                matching_files.append(file_path)
-
-        if not matching_files:
-            raise FileNotFoundError(f"No file matching '{name_pattern}' found in {directory}")
-
-        # If multiple files match but none with exact coordinates, select the most recent one
-        newest_file = sorted(matching_files, key=lambda p: p.stat().st_mtime, reverse=True)[0]
-        logger.debug(f"Selected newest matching file: {newest_file}")
-        return newest_file
+        from src.utils.netcdf_utils import find_netcdf_file
+        return find_netcdf_file(directory, name_pattern, self.lat, self.lon)
 
     def _filter_month(self) -> None:
         """

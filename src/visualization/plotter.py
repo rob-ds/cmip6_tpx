@@ -226,13 +226,27 @@ class BasePlotter:
 
     @staticmethod
     def _format_coordinate(value: float, prefix: str = "") -> str:
+        """Format a coordinate value for use in filenames."""
+        from src.utils.netcdf_utils import format_coordinate
+        return format_coordinate(value, prefix)
+
+    def format_coordinates_cardinal(self) -> str:
         """
-        Format a coordinate value for use in filenames.
+        Format geographic coordinates in cardinal format.
+
+        Returns:
+            str: Formatted location string (e.g., "37.50°N, 122.30°W")
         """
-        formatted = f"{value:.2f}".replace('.', 'p').replace('-', 'n')
-        if prefix:
-            return f"{prefix}{formatted}"
-        return formatted
+        # Format latitude
+        lat_dir = "N" if self.latitude >= 0 else "S"
+        lat_val = abs(self.latitude)
+
+        # Format longitude
+        adj_lon = self.longitude if self.longitude <= 180 else self.longitude - 360
+        lon_dir = "E" if adj_lon >= 0 else "W"
+        lon_val = abs(adj_lon)
+
+        return f"{lat_val:.2f}°{lat_dir}, {lon_val:.2f}°{lon_dir}"
 
     def _find_file(self, directory: Path, name_pattern: str) -> Path:
         """
@@ -248,29 +262,8 @@ class BasePlotter:
         Raises:
             FileNotFoundError: If no matching file is found
         """
-        matching_files = []
-
-        for file_path in directory.glob("*.nc"):
-            if name_pattern in file_path.name:
-                # If we have latitude and longitude, try to match more specifically
-                if self.latitude is not None and self.longitude is not None:
-                    lat_str = self._format_coordinate(self.latitude, "lat")
-                    lon_str = self._format_coordinate(self.longitude, "lon")
-
-                    # If file contains the specific coordinate, prioritize it
-                    if lat_str in file_path.name and lon_str in file_path.name:
-                        logger.debug(f"Found exact coordinate match: {file_path}")
-                        return file_path
-
-                matching_files.append(file_path)
-
-        if not matching_files:
-            raise FileNotFoundError(f"No file matching '{name_pattern}' found in {directory}")
-
-        # If multiple files match but none with exact coordinates, select the most recent one
-        newest_file = sorted(matching_files, key=lambda p: p.stat().st_mtime, reverse=True)[0]
-        logger.debug(f"Selected newest matching file: {newest_file}")
-        return newest_file
+        from src.utils.netcdf_utils import find_netcdf_file
+        return find_netcdf_file(directory, name_pattern, self.latitude, self.longitude)
 
     def load_data(self, data_type: str = 'anomalies', months: List[int] = None) -> None:
         """
