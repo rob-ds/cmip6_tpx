@@ -88,9 +88,11 @@ class LocationMapPlotter(BasePlotter):
         circle_y = latitude + circle_radius * np.sin(theta)
         ax_main.plot(circle_x, circle_y, 'r-', linewidth=1.5, transform=ccrs.PlateCarree())
 
-        # Add text with coordinates
+        # Add text with coordinates in cardinal format
+        from src.utils.geo_utils import format_coordinates_cardinal
+        lat_str, lon_str, _ = format_coordinates_cardinal(latitude, longitude, precision=4)
         ax_main.text(longitude + 0.3, latitude + 0.3,
-                     f"Lat: {latitude:.4f}°\nLon: {longitude:.4f}°",
+                     f"Lat: {lat_str}\nLon: {lon_str}",
                      horizontalalignment='left',
                      transform=ccrs.PlateCarree(),
                      bbox=dict(boxstyle="round,pad=0.3", facecolor='white', alpha=0.8))
@@ -131,10 +133,7 @@ class LocationMapPlotter(BasePlotter):
 
         # Add title
         title = f"Study Location"
-        subtitle = f"Variable: {self.variable.capitalize()}, Scenario: {self.experiment.upper()}"
-
         plt.suptitle(title, fontsize=16, weight='bold', x=0.28, ha='left')
-        plt.figtext(0.37, 0.92, subtitle, ha='center', fontsize=12, style='italic')
 
         # Store figure
         self.fig = fig

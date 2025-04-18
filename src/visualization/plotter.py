@@ -230,23 +230,13 @@ class BasePlotter:
         from src.utils.netcdf_utils import format_coordinate
         return format_coordinate(value, prefix)
 
-    def format_coordinates_cardinal(self) -> str:
-        """
-        Format geographic coordinates in cardinal format.
-
-        Returns:
-            str: Formatted location string (e.g., "37.50°N, 122.30°W")
-        """
-        # Format latitude
-        lat_dir = "N" if self.latitude >= 0 else "S"
-        lat_val = abs(self.latitude)
-
-        # Format longitude
-        adj_lon = self.longitude if self.longitude <= 180 else self.longitude - 360
-        lon_dir = "E" if adj_lon >= 0 else "W"
-        lon_val = abs(adj_lon)
-
-        return f"{lat_val:.2f}°{lat_dir}, {lon_val:.2f}°{lon_dir}"
+    def format_coordinates_cardinal(self, precision: int = 2) -> str:
+        """Format geographic coordinates in cardinal format."""
+        from src.utils.geo_utils import format_coordinates_cardinal
+        _, _, location_str = format_coordinates_cardinal(
+            self.latitude, self.longitude, precision
+        )
+        return location_str
 
     def _find_file(self, directory: Path, name_pattern: str) -> Path:
         """
