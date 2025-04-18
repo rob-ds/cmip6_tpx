@@ -13,10 +13,9 @@ dependencies:
   - cdsapi
   - matplotlib
   - cartopy
-  - pytest
   - seaborn
   - pymannkendall
+  - pytest
   - pip
   - pip:
-    - xclim
     - statsmodels
